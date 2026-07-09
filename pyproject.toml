@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatial-smooth"
+version = "0.1.0"
+description = "Composable spatial and cell-state smoothing of gene signatures for single-cell and spatial transcriptomics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Dominik Otto", email = "dotto@fredhutch.org" },
+]
+keywords = ["spatial transcriptomics", "single-cell", "smoothing", "gaussian process", "anndata"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "scipy>=1.10",
+    "anndata>=0.9",
+]
+
+[project.optional-dependencies]
+# GP smoothing over a cell-state embedding (kompot.smooth_expression).
+# kompot >= 0.8.0 is required for the `smooth_expression` entry point; releases
+# on PyPI are older, so install from the source repository until 0.8.0 ships.
+dm = ["kompot>=0.8.0"]
+# Diffusion-map embedding used by the `dm` step when `obsm["DM_EigenVectors"]` is absent.
+embedding = ["palantir>=1.4"]
+# Plotting backends.
+plot = ["scanpy>=1.9", "matplotlib>=3.6"]
+squidpy = ["squidpy>=1.4"]
+# Fine-grid FFT Nadaraya-Watson smoother (`Kde` step).
+kde = ["KDEpy>=1.1"]
+test = ["pytest>=7.0", "scanpy>=1.9", "matplotlib>=3.6", "KDEpy>=1.1"]
+docs = [
+    "sphinx>=7.0,<9",
+    "furo>=2024.1.29",
+    "myst-nb>=1.1",
+    "sphinx-copybutton>=0.5",
+    "scanpy>=1.9",
+    "matplotlib>=3.6",
+]
+all = [
+    "kompot>=0.8.0",
+    "palantir>=1.4",
+    "scanpy>=1.9",
+    "matplotlib>=3.6",
+    "squidpy>=1.4",
+    "KDEpy>=1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/settylab/spatial-smooth"
+Documentation = "https://spatial-smooth.readthedocs.io/"
+"Bug Tracker" = "https://github.com/settylab/spatial-smooth/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+python_files = "test_*.py"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+    "ignore::PendingDeprecationWarning",
+]

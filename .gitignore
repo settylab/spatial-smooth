@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docs
+docs/build/
+
+# Notebook scratch
+.ipynb_checkpoints/
+notebooks/data/
+notebooks/*.h5ad
+
+# OS
+.DS_Store
