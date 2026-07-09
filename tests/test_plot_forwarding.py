@@ -132,3 +132,28 @@ def test_caller_supplied_color_raises_instead_of_being_ignored(smoothed):
     """Silently dropping `color` is the wrong failure mode under 'full control of the plot'."""
     with pytest.raises(TypeError, match="cannot be overridden"):
         pl.signature(smoothed, "sig", backend="scanpy", show=False, color=["something_else"])
+
+
+def test_default_marker_size_scales_with_density():
+    """Marker area must fall as 1/n so a dense section renders continuous, not as speckle."""
+    assert pl.default_marker_size(36_419) == pytest.approx(13.7, abs=0.2)
+    assert pl.default_marker_size(1_000_000) < pl.default_marker_size(10_000)
+    assert pl.default_marker_size(10) == pl.MAX_MARKER_SIZE  # capped, not a saucer
+
+
+def test_marker_size_injected_for_spatial_but_caller_wins(smoothed, monkeypatch):
+    recorder = _Recorder()
+    _patch_scanpy(monkeypatch, recorder)
+
+    pl.signature(smoothed, "sig", backend="scanpy", show=False)
+    assert recorder.last["size"] == pytest.approx(pl.default_marker_size(smoothed.n_obs))
+
+    pl.signature(smoothed, "sig", backend="scanpy", show=False, size=42)
+    assert recorder.last["size"] == 42
+
+
+def test_marker_size_not_injected_for_a_non_spatial_basis(smoothed, monkeypatch):
+    recorder = _Recorder()
+    _patch_scanpy(monkeypatch, recorder)
+    pl.signature(smoothed, "sig", backend="scanpy", show=False, basis="DM_EigenVectors")
+    assert "size" not in recorder.last

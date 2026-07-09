@@ -16,7 +16,7 @@ an extra, imported lazily, and reported with the exact ``pip install`` line when
      - brings
      - needed for
    * - ``dm``
-     - `kompot <https://github.com/settylab/kompot>`_ >= 0.8.0
+     - `kompot <https://github.com/settylab/kompot>`_
      - the Gaussian-process step (:class:`~spatial_smooth.steps.KompotGP`)
    * - ``embedding``
      - `palantir <https://github.com/settylab/palantir>`_
@@ -45,15 +45,8 @@ Check where you stand at any time:
      pandas      2.3.3       ok
      scipy       1.18.0      ok
      anndata     0.12.17     ok
-     kompot      -           missing: pip install "kompot>=0.8.0" (optional)
+     kompot      -           missing: pip install "kompot>=0.7.0" (optional)
      ...
-
-.. note::
-
-   ``kompot >= 0.8.0`` exposes ``smooth_expression``; PyPI still carries 0.7.x. Until 0.8.0
-   ships, install it from source::
-
-       pip install "kompot @ git+https://github.com/settylab/kompot.git"
 
 Every missing optional dependency raises where it is first needed, naming the package, what it
 is for, and how to install it -- never a bare ``ModuleNotFoundError`` from deep in a call stack.

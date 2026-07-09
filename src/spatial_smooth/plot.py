@@ -36,10 +36,14 @@ tissue vertically. Whenever the basis being drawn is ``"spatial"``, this module 
 y-axis and sets equal aspect, so every backend renders the section as the microscope saw it.
 
 **``size`` is backend-native and is deliberately not translated.** In ``scanpy`` it is the marker
-area in points squared (scanpy's own default, ``~120000 / n_obs``, is usually right); in
-``squidpy`` it is a *scale factor* on the inferred spot size (default ``1.0``). A ``size=6`` that
-looks correct in one is nearly invisible in the other. Omit it and take the backend's default
-unless you have a reason not to.
+area in points squared; in ``squidpy`` it is a *scale factor* on the inferred spot size (default
+``1.0``). A ``size=6`` that looks right in one is nearly invisible in the other, so this module
+does not pretend they mean the same thing.
+
+What it *does* do is pick a sane default for the scanpy backends on a spatial basis, where
+scanpy's own ``120000 / n_obs`` leaves visible gaps between cells and the field reads as speckle
+rather than anatomy. :func:`default_marker_size` keeps the ``1 / n_obs`` area scaling and raises
+the constant, so the section renders continuous. Pass ``size`` yourself to override.
 """
 from __future__ import annotations
 
@@ -49,7 +53,7 @@ from ._deps import have, require
 from .core import provenance
 from .steps import SPATIAL_KEY
 
-__all__ = ["signature", "compare", "available_backends", "BACKENDS"]
+__all__ = ["signature", "compare", "available_backends", "default_marker_size", "BACKENDS"]
 
 #: ``backend -> (module, attribute)`` of the function each backend delegates to.
 BACKENDS = {
@@ -121,6 +125,24 @@ def _colors(adata, record: Dict[str, Any], raw: bool) -> List[str]:
     return [smoothed]
 
 
+#: scanpy sizes markers as ``120000 / n_obs`` points squared. On a tissue section that leaves
+#: visible gaps between cells and the field reads as speckle rather than anatomy. Markers should
+#: tile the section, so their *area* scales as ``1 / n_obs``; only the constant needed changing.
+#: Calibrated by eye on a 36k-cell imaging section, where this gives ~14 pt**2.
+MARKER_AREA_CONSTANT = 500_000.0
+#: Ceiling, so a few hundred cells do not become saucers.
+MAX_MARKER_SIZE = 200.0
+
+
+def default_marker_size(n_obs: int) -> float:
+    """Marker area (points squared) for drawing ``n_obs`` cells on a tissue section.
+
+    Only used for ``scanpy`` backends on a spatial basis, and only when the caller did not pass
+    ``size``. squidpy sizes its own markers from the inferred spot size and is left alone.
+    """
+    return float(min(MARKER_AREA_CONSTANT / max(int(n_obs), 1), MAX_MARKER_SIZE))
+
+
 def _as_axes(result) -> List[Any]:
     """Normalise the several shapes scanpy/squidpy return into a flat list of Axes."""
     if result is None:
@@ -188,6 +210,7 @@ def _dispatch(adata, backend: str, color: List[str], basis: str, kwargs: Dict[st
     # before anything is shown. `sc.pl.spatial` already inverts (it overlays a tissue image),
     # so this is a no-op there beyond enforcing equal aspect.
     plt = require("matplotlib").pyplot
+    merged.setdefault("size", default_marker_size(adata.n_obs))
     show = merged.pop("show", None)
     if backend == "scanpy-spatial":
         result = scanpy.pl.spatial(adata, show=False, **merged)

@@ -32,7 +32,7 @@ def test_kde_step_without_kdepy(adata, signature, monkeypatch):
 
 def test_gp_step_without_kompot(adata, signature, monkeypatch):
     _block(monkeypatch, "kompot")
-    with pytest.raises(ImportError, match=r'pip install "kompot>=0\.8\.0"'):
+    with pytest.raises(ImportError, match=r'pip install "kompot>=0\.7\.0"'):
         ss.smooth(adata, signature, "sig", steps="dm", auto_embed=False)
 
 
@@ -58,13 +58,13 @@ def test_plotting_without_any_backend(adata, signature, monkeypatch):
 
 
 def test_gp_step_rejects_a_kompot_without_smooth_expression(adata, signature, monkeypatch):
-    """kompot < 0.8.0 imports fine but lacks the entry point; say so, do not AttributeError."""
+    """An old kompot imports fine but lacks the entry point; say so, do not AttributeError."""
     import types
 
     stub = types.ModuleType("kompot")
-    stub.__version__ = "0.7.0"
+    stub.__version__ = "0.6.0"
     monkeypatch.setitem(sys.modules, "kompot", stub)
-    with pytest.raises(ImportError, match=r"added in kompot 0\.8\.0"):
+    with pytest.raises(ImportError, match=r"older releases do not provide"):
         ss.smooth(adata, signature, "sig", steps="dm", auto_embed=False)
 
 

@@ -320,9 +320,9 @@ class KompotGP(Step):
         kompot = require("kompot")
         if not hasattr(kompot, "smooth_expression"):
             raise ImportError(
-                "spatial_smooth's KompotGP step needs `kompot.smooth_expression`, which was "
-                f"added in kompot 0.8.0 (found {getattr(kompot, '__version__', '?')}).\n"
-                '    Install it with:  pip install "kompot>=0.8.0"'
+                "spatial_smooth's KompotGP step needs `kompot.smooth_expression`, which "
+                f"older releases do not provide (found {getattr(kompot, '__version__', '?')}).\n"
+                '    Install it with:  pip install "kompot>=0.7.0"'
             )
         from kompot import GPSettings, OutputSettings, StorageSettings
 

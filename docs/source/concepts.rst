@@ -96,9 +96,15 @@ the bandwidth each step actually resolved to:
 .. code-block:: python
 
    >>> ss.provenance(adata, "sig")["steps"]
-   [{'kind': 'knn_gaussian', 'basis': 'spatial', 'k': 100, 'sigma': None,
+   [{'kind': 'knn_gaussian', 'basis': 'spatial', 'k': 400, 'sigma': None,
      'sigma_factor': 6.0, 'workers': -1,
-     'resolved': {'sigma_used': 73.4, 'k_used': 100}}]
+     'resolved': {'sigma_used': 78.3, 'k_used': 400,
+                  'kernel_mass_retained': 0.955,
+                  'sigma_effective': 71.6,
+                  'sigma_effective_p1': 52.2, 'sigma_effective_p99': 84.1}}]
+
+``sigma_used`` is the nominal Gaussian width; ``sigma_effective`` is what the ``k``-truncated
+kernel actually behaves like. Quote the latter -- see :ref:`truncation` below.
 
 
 Scoring, and why gene-level smoothing is free
@@ -138,7 +144,7 @@ Choosing a smoother
      - full slide (~1.6e5 cells)
      - gives you
    * - ``KnnGaussian``
-     - Gaussian kernel over ``k`` spatial neighbours
+     - truncated Gaussian over ``k`` spatial neighbours
      - ~1 s
      - the default; fast, sharp
    * - ``Kde``
@@ -155,6 +161,77 @@ marginally sharper when given enough landmarks; the kNN kernel is roughly two or
 faster per gene. Reach for the GP when you want its extras -- an explicit length scale,
 uncertainty, or ``groupby``/``condition`` (fit on one condition, evaluate everywhere) -- and for
 smoothing over a diffusion map, where it is the established choice.
+
+
+.. _truncation:
+
+Truncation: what bandwidth the data actually sees
+-------------------------------------------------
+
+:class:`~spatial_smooth.steps.KnnGaussian` evaluates its Gaussian only over each cell's ``k``
+nearest neighbours. That truncation is not free, and it is the number most likely to end up
+misquoted in a methods section, so the package measures it.
+
+Write :math:`d_{ij}` for the distance from cell :math:`i` to its neighbour :math:`j`, and
+:math:`\mathcal{N}_k(i)` for the ``k`` nearest neighbours of :math:`i` (itself included). The
+weights are
+
+.. math::
+
+   w_{ij} = \frac{\exp\!\left(-d_{ij}^{2} / 2\sigma^{2}\right)}
+                 {\sum_{l \in \mathcal{N}_k(i)} \exp\!\left(-d_{il}^{2} / 2\sigma^{2}\right)},
+   \qquad \sum_{j \in \mathcal{N}_k(i)} w_{ij} = 1 ,
+
+so the operator is row-stochastic by construction. Let :math:`r_k(i)` be the distance to the
+``k``-th neighbour. Two diagnostics follow, both recorded by
+:func:`~spatial_smooth.core.provenance`.
+
+**Retained kernel mass.** For an isotropic 2-D Gaussian the mass inside radius :math:`r` is
+:math:`1 - e^{-r^{2}/2\sigma^{2}}`, so the fraction of the *untruncated* kernel that survives the
+``k``-neighbour cutoff is
+
+.. math::
+
+   m = \frac{1}{n}\sum_{i} \left[ 1 - \exp\!\left(-\,r_k(i)^{2} / 2\sigma^{2}\right) \right].
+
+**Effective bandwidth.** A 2-D Gaussian satisfies :math:`\mathbb{E}[d^{2}] = 2\sigma^{2}`.
+Inverting that on the *realised* weights gives the bandwidth the truncated kernel behaves like:
+
+.. math::
+
+   \sigma_{\mathrm{eff}}(i) = \sqrt{\tfrac{1}{2} \sum_{j \in \mathcal{N}_k(i)} w_{ij}\, d_{ij}^{2}} .
+
+Because :math:`r_k(i)` is fixed by a neighbour *count*, it contracts where cells are dense and
+expands where they are sparse: :math:`\sigma_{\mathrm{eff}}` varies from cell to cell, and the
+smoother is **truncated-Gaussian and implicitly density-adaptive** rather than fixed-bandwidth.
+``provenance()`` therefore stores ``kernel_mass_retained`` (:math:`m`), ``sigma_effective``
+(:math:`\overline{\sigma_{\mathrm{eff}}}`) and its 1st/99th percentiles, and a ``UserWarning``
+fires when :math:`m < 0.9`.
+
+Measured on the tutorial's 10x Xenium mouse-brain section (:math:`n = 36{,}602`, median
+nearest-neighbour distance 13.05 µm, hence nominal :math:`\sigma = 6 \times 13.05 = 78.3` µm):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 33 33
+
+   * - quantity
+     - ``k = 100``
+     - ``k = 400`` (default)
+   * - retained mass :math:`m`
+     - 0.58
+     - **0.96**
+   * - :math:`\overline{\sigma_{\mathrm{eff}}}`
+     - 47.3 µm
+     - **71.6 µm**
+   * - :math:`\sigma_{\mathrm{eff}}` p1 → p99
+     - 24.9 → 68.6 µm
+     - 52.2 → 84.1 µm
+
+At ``k = 100`` the nominal :math:`\sigma` overstates the realised bandwidth by roughly 40%, which
+is why the default is ``k = 400``. **Quote** ``sigma_effective``, **not** ``sigma_used``.
+
+Implementation: :func:`spatial_smooth.smoothers.knn_gaussian_operator` (``return_info=True``).
 
 
 Bandwidths are scale-invariant

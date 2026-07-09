@@ -79,5 +79,5 @@ def has_kompot() -> bool:
 
 
 needs_kompot = pytest.mark.skipif(
-    not has_kompot(), reason="kompot>=0.8.0 (with smooth_expression) not installed"
+    not has_kompot(), reason="kompot (with smooth_expression) not installed"
 )
