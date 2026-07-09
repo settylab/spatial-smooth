@@ -197,7 +197,7 @@ nearest-neighbour distances), so you do not pick a number in microns.
 
 code(
     '''\
-%time ss.smooth(adata, HIPPOCAMPUS, "hippocampus")
+ss.smooth(adata, HIPPOCAMPUS, "hippocampus")
 
 ss.pl.signature(adata, "hippocampus")'''
 )
@@ -247,26 +247,26 @@ The cell-state step is a Gaussian-process regression over a diffusion map of the
 manifold (`kompot.smooth_expression`, built on `mellon`). It needs `obsm["DM_EigenVectors"]`;
 with `auto_embed=True` (the default) `spatial-smooth` computes it with Palantir if absent.
 
-Everything below runs on the **full section** — all 36,419 cells. The Gaussian process is the
-slow step (a few minutes); the two spatial smoothers take about a second each."""
+Everything below runs on the **full section** — every cell, no subsampling. The Gaussian process
+is the slow step (a few minutes); the two spatial smoothers take about a second each."""
 )
 
 code(
     '''\
-%time ss.compute_diffusion_map(adata)         # Palantir -> obsm["DM_EigenVectors"]
+ss.compute_diffusion_map(adata)         # Palantir -> obsm["DM_EigenVectors"]
 adata.obsm["DM_EigenVectors"].shape'''
 )
 
 code(
     '''\
 # cell state only: GP over the diffusion map
-%time ss.smooth(adata, HIPPOCAMPUS, "dm_only", steps="dm")
+ss.smooth(adata, HIPPOCAMPUS, "dm_only", steps="dm")
 
 # spatial only: Gaussian kNN over tissue coordinates
-%time ss.smooth(adata, HIPPOCAMPUS, "spatial_only", steps="spatial")
+ss.smooth(adata, HIPPOCAMPUS, "spatial_only", steps="spatial")
 
 # both, composed: manifold first, then tissue
-%time ss.smooth(adata, HIPPOCAMPUS, "composed", steps="dm+spatial")
+ss.smooth(adata, HIPPOCAMPUS, "composed", steps="dm+spatial")
 
 ss.list_results(adata)'''
 )
@@ -370,7 +370,7 @@ pipeline'''
 
 code(
     '''\
-%time ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
+ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
 
 print("smoothed score      :", adata.obs["custom"].shape)
 print("smoothed expression :", adata.obsm["custom_smoothed"].shape)   # store_genes=True'''
@@ -409,17 +409,18 @@ for step in prov["steps"]:
 
 code(
     '''\
-# No recomputation: this is a table lookup and a scatter plot.
-%time ss.pl.signature(reloaded, "custom", backend="scanpy", frameon=False)'''
+# Nothing is recomputed here: the smoothed values are read straight from the file.
+import time
+start = time.time()
+ss.pl.signature(reloaded, "custom", backend="scanpy", frameon=False)
+print(f"drawing the saved result took {time.time() - start:.2f} seconds")'''
 )
 
 md(
     """\
-Compare that timing with the `%time` on the `ss.smooth` call above. The plot is instantaneous
-because the field was never recomputed — `spatial_smooth.plot` reads `obs` and `uns` and calls
-scanpy. The package's test suite asserts this adversarially: it blocks `kompot`, `KDEpy` and
-`palantir` at the import machinery, replaces every compute entry point with a function that
-raises, and *then* renders a reloaded `.h5ad`."""
+Smoothing this signature took minutes. Drawing it back from the saved file took a fraction of a
+second, because the field was never recomputed — `spatial_smooth.plot` reads `obs` and `uns` and
+hands them to scanpy. That is the whole point of saving: do the expensive step once."""
 )
 
 # --------------------------------------------------------------------------------------- #
