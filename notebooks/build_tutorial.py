@@ -86,9 +86,34 @@ md(
     """\
 ## 1. The data
 
-The 10x Xenium mouse-brain coronal subset: ~36,000 cells, a 248-gene panel, one cell per row with
-physical centroids. We fetch the two small loose outputs, assemble an `AnnData`, and put the
-centroids in `obsm["spatial"]` — the key `spatial-smooth` reads."""
+### Using your own data instead
+
+**`spatial-smooth` needs exactly two things** from an `AnnData`, and nothing else:
+
+1. `adata.X` (or a layer you name via `layer=`) holding **log-normalised** expression, and
+2. `adata.obsm["spatial"]` holding the cells' physical coordinates, as an `(n_obs, 2)` array.
+
+So if you already have a prepared object, skip the download entirely — this is the whole of
+section 1 for you:
+
+```python
+import anndata as ad
+adata = ad.read_h5ad("my_section.h5ad")
+assert "spatial" in adata.obsm          # (n_obs, 2) coordinates
+# adata.X must be log-normalised; if it holds raw counts:
+#   adata.layers["counts"] = adata.X.copy()
+#   sc.pp.normalize_total(adata); sc.pp.log1p(adata)
+```
+
+Then jump to section 2. Cell-state smoothing (`steps="dm"`) additionally wants
+`obsm["DM_EigenVectors"]`, which `ss.smooth(..., auto_embed=True)` computes for you if absent.
+
+### The example dataset
+
+The rest of this notebook uses a public 10x Xenium mouse-brain coronal subset: ~36,000 cells, a
+248-gene panel, one cell per row with physical centroids. We fetch the two small loose outputs
+(cached, so re-running is free), assemble an `AnnData`, and put the centroids in
+`obsm["spatial"]`."""
 )
 
 code(
@@ -101,8 +126,13 @@ NAME = "Xenium_V1_FF_Mouse_Brain_Coronal_Subset_CTX_HP"
 DATA = pathlib.Path("data/xenium_mousebrain")
 DATA.mkdir(parents=True, exist_ok=True)
 
+# Point this at your own .h5ad to run the whole notebook on your data instead.
+PREPARED = pathlib.Path("data/prepared.h5ad")
+
 for fname in (f"{NAME}_cell_feature_matrix.h5", f"{NAME}_cells.csv.gz"):
     dest = DATA / fname
+    if PREPARED.exists():
+        break
     if not dest.exists():
         print(f"downloading {fname} ...")
         urllib.request.urlretrieve(f"{BASE}/{fname}", dest)
@@ -111,19 +141,31 @@ for fname in (f"{NAME}_cell_feature_matrix.h5", f"{NAME}_cells.csv.gz"):
 
 code(
     '''\
-adata = sc.read_10x_h5(DATA / f"{NAME}_cell_feature_matrix.h5")
-adata.var_names_make_unique()
+import anndata as ad
 
-cells = pd.read_csv(DATA / f"{NAME}_cells.csv.gz").set_index("cell_id")
-cells.index = cells.index.astype(str)
-adata.obs_names = adata.obs_names.astype(str)
-adata.obs = adata.obs.join(cells, how="left")
-adata.obsm["spatial"] = adata.obs[["x_centroid", "y_centroid"]].to_numpy()
+if PREPARED.exists():
+    # --- alternative path: load an object you prepared earlier -------------------
+    adata = ad.read_h5ad(PREPARED)
+    print(f"loaded {PREPARED}")
+else:
+    # --- example path: assemble the public Xenium section ------------------------
+    adata = sc.read_10x_h5(DATA / f"{NAME}_cell_feature_matrix.h5")
+    adata.var_names_make_unique()
 
-sc.pp.filter_cells(adata, min_counts=10)
-adata.layers["counts"] = adata.X.copy()
-sc.pp.normalize_total(adata)
-sc.pp.log1p(adata)
+    cells = pd.read_csv(DATA / f"{NAME}_cells.csv.gz").set_index("cell_id")
+    cells.index = cells.index.astype(str)
+    adata.obs_names = adata.obs_names.astype(str)
+    adata.obs = adata.obs.join(cells, how="left")
+    adata.obsm["spatial"] = adata.obs[["x_centroid", "y_centroid"]].to_numpy()
+
+    sc.pp.filter_cells(adata, min_counts=10)
+    adata.layers["counts"] = adata.X.copy()
+    sc.pp.normalize_total(adata)
+    sc.pp.log1p(adata)
+
+# The only two preconditions, checked explicitly.
+assert "spatial" in adata.obsm, "spatial-smooth needs obsm['spatial']"
+assert adata.X.max() < 100, "adata.X should be log-normalised, not raw counts"
 
 print(f"{adata.n_obs:,} cells x {adata.n_vars} genes")'''
 )

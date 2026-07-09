@@ -73,3 +73,22 @@ def test_smoothers_are_pure_functions(adata, signature):
     ss.smooth_matrix_knn_gaussian(adata.obsm["spatial"], adata.X[:, :3])
     np.testing.assert_array_equal(adata.X, before)
     assert "signature" not in adata.obs
+
+
+def test_pick_smoothed_layer_ignores_non_string_keys():
+    """anndata 0.13 yields a spurious `None` when iterating `adata.layers`.
+
+    Regression: it used to reach `.startswith` and raise `AttributeError: 'NoneType'`.
+    """
+    from spatial_smooth.steps import pick_smoothed_layer
+
+    names = [None, "_ss_gp_all_std", "_ss_gp_all_smoothed", "counts"]
+    assert pick_smoothed_layer(names, "_ss_gp") == "_ss_gp_all_smoothed"
+    assert pick_smoothed_layer(iter(names), "_ss_gp") == "_ss_gp_all_smoothed"
+
+
+def test_pick_smoothed_layer_reports_what_it_saw():
+    from spatial_smooth.steps import pick_smoothed_layer
+
+    with pytest.raises(RuntimeError, match=r"no smoothed layer.*\['counts'\]"):
+        pick_smoothed_layer([None, "counts"], "_ss_gp")

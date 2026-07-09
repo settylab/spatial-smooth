@@ -48,6 +48,7 @@ __all__ = [
     "KnnGaussian",
     "Kde",
     "KompotGP",
+    "pick_smoothed_layer",
     "resolve_steps",
     "DM_KEY",
     "SPATIAL_KEY",
@@ -58,6 +59,28 @@ __all__ = [
 DM_KEY = "DM_EigenVectors"
 #: Default physical-coordinate key (the AnnData spatial convention).
 SPATIAL_KEY = "spatial"
+
+
+def pick_smoothed_layer(layer_names, result_key: str) -> str:
+    """Find the layer ``kompot.smooth_expression`` wrote, given its ``result_key``.
+
+    kompot names it ``f"{result_key}_{condition}_smoothed"``, alongside a ``_std`` sibling. The
+    condition label is not knowable here (it depends on ``groupby``/``condition`` sanitisation),
+    so match on the prefix and suffix.
+
+    ``layer_names`` is filtered to strings first: anndata 0.13 yields a spurious ``None`` key
+    when iterating ``adata.layers``, which is not a layer.
+    """
+    names = [name for name in layer_names if isinstance(name, str)]
+    hits = [
+        name for name in names if name.startswith(result_key) and name.endswith("_smoothed")
+    ]
+    if not hits:
+        raise RuntimeError(
+            "kompot.smooth_expression produced no smoothed layer "
+            f"(result_key={result_key!r}); layers={names}"
+        )
+    return hits[0]
 
 
 @dataclass(frozen=True)
@@ -296,17 +319,8 @@ class KompotGP(Step):
                 output=OutputSettings(progress=progress),
             )
 
-        hits = [
-            layer
-            for layer in work.layers
-            if layer.startswith(result_key) and layer.endswith("_smoothed")
-        ]
-        if not hits:
-            raise RuntimeError(
-                "kompot.smooth_expression produced no smoothed layer "
-                f"(result_key={result_key!r}); layers={list(work.layers)}"
-            )
-        out = work.layers[hits[0]]
+        smoothed_layer = pick_smoothed_layer(work.layers, result_key)
+        out = work.layers[smoothed_layer]
         out = out.toarray() if hasattr(out, "toarray") else np.asarray(out)
         return np.asarray(out, dtype=np.float64), {
             "kompot_version": str(getattr(kompot, "__version__", "?")),

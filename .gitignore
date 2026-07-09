@@ -24,3 +24,4 @@ notebooks/*.h5ad
 # OS
 .DS_Store
 notebooks/ss-tutorial-*.out
+notebooks/run_tutorial.sbatch
