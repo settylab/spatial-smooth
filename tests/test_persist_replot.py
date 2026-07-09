@@ -116,3 +116,17 @@ def test_provenance_error_names_available_results(adata, signature):
     ss.smooth(adata, signature, "present")
     with pytest.raises(KeyError, match=r"available: \['present'\]"):
         ss.provenance(adata, "absent")
+
+
+def test_default_backend_also_never_recomputes(adata, signature, tmp_path, monkeypatch):
+    """The shipped test only sealed backend='scanpy'; `auto` is the path users actually take."""
+    import anndata as ad
+
+    ss.smooth(adata, signature, "sig", steps="spatial")
+    path = tmp_path / "auto.h5ad"
+    adata.write_h5ad(path)
+
+    _seal(monkeypatch)
+    reloaded = ad.read_h5ad(path)
+    pytest.importorskip("scanpy")
+    ss.pl.signature(reloaded, "sig", show=False)  # backend="auto"

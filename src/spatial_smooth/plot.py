@@ -19,11 +19,27 @@ Backends and where your ``**kwargs`` go
 ========================  ==================================  ======================================
 
 Every ``**kwargs`` is forwarded **verbatim** to that function. ``color`` is set by this module
-(to the raw and smoothed obs columns) and cannot be overridden; everything else -- ``cmap``,
-``size``, ``figsize``, ``vmin``/``vmax``, ``title``, ``save``, ``ax`` -- is the backend's own
-parameter, documented in the backend's own docstring. Defaults this module supplies (a
-perceptually uniform colour map, percentile colour limits where the backend supports them, a grey
-``na_color``) are applied only when you have not passed that key yourself.
+(to the raw and smoothed obs columns); passing it raises ``TypeError`` rather than being silently
+ignored. Everything else -- ``cmap``, ``size``, ``figsize``, ``vmin``/``vmax``, ``title``,
+``save``, ``ax`` -- is the backend's own parameter, documented in the backend's own docstring.
+Defaults this module supplies (a perceptually uniform colour map, percentile colour limits where
+the backend supports them, a grey ``na_color``) are applied only when you have not passed that
+key yourself.
+
+Two conventions this module *does* normalise, because leaving them to the backend produced plots
+that differed for the same data:
+
+**Orientation.** Imaging platforms store cell centroids as image coordinates -- origin top-left,
+y increasing *downward*. ``squidpy.pl.spatial_scatter`` honours that; ``scanpy.pl.embedding``
+treats ``obsm["spatial"]`` as an abstract Cartesian embedding and draws y upward, mirroring the
+tissue vertically. Whenever the basis being drawn is ``"spatial"``, this module inverts the
+y-axis and sets equal aspect, so every backend renders the section as the microscope saw it.
+
+**``size`` is backend-native and is deliberately not translated.** In ``scanpy`` it is the marker
+area in points squared (scanpy's own default, ``~120000 / n_obs``, is usually right); in
+``squidpy`` it is a *scale factor* on the inferred spot size (default ``1.0``). A ``size=6`` that
+looks correct in one is nearly invisible in the other. Omit it and take the backend's default
+unless you have a reason not to.
 """
 from __future__ import annotations
 
@@ -105,7 +121,46 @@ def _colors(adata, record: Dict[str, Any], raw: bool) -> List[str]:
     return [smoothed]
 
 
+def _as_axes(result) -> List[Any]:
+    """Normalise the several shapes scanpy/squidpy return into a flat list of Axes."""
+    if result is None:
+        return []
+    if hasattr(result, "flatten"):  # numpy array of Axes
+        return list(result.flatten())
+    if isinstance(result, (list, tuple)):
+        out: List[Any] = []
+        for item in result:
+            out.extend(_as_axes(item))
+        return out
+    return [result] if hasattr(result, "yaxis") else []
+
+
+def _apply_image_convention(axes) -> None:
+    """Draw a spatial basis the way an imaging assay stores it: y increasing downward.
+
+    Cell centroids from imaging platforms are *image* coordinates -- the origin is the top-left
+    of the slide and y grows downward. ``squidpy.pl.spatial_scatter`` honours that and inverts
+    the y-axis; ``scanpy.pl.embedding`` treats any ``obsm`` basis as an abstract Cartesian
+    embedding and leaves y increasing upward. Rendering one section through both backends
+    therefore produced vertically mirrored tissue -- a plot that looks entirely plausible and is
+    upside down.
+
+    We normalise onto squidpy's convention: the tissue as the microscope saw it. Equal aspect
+    goes with it, because anisotropic scaling of physical coordinates distorts anatomy.
+    """
+    for ax in axes:
+        if not ax.yaxis_inverted():
+            ax.invert_yaxis()
+        ax.set_aspect("equal")
+
+
 def _dispatch(adata, backend: str, color: List[str], basis: str, kwargs: Dict[str, Any]):
+    if "color" in kwargs:
+        raise TypeError(
+            "`color` is set from the stored result and cannot be overridden; it names the raw "
+            f"and smoothed obs columns ({color}). To colour cells by something else, call the "
+            "backend function directly (see spatial_smooth.plot.BACKENDS)."
+        )
     merged = dict(_DEFAULTS[backend])
     merged.update(kwargs)
     merged["color"] = color
@@ -114,12 +169,37 @@ def _dispatch(adata, backend: str, color: List[str], basis: str, kwargs: Dict[st
         squidpy = require("squidpy")
         merged.setdefault("shape", None)  # point cloud, not a Visium hex grid
         merged.setdefault("spatial_key", basis)
+        # squidpy has no `show`; it draws unconditionally and returns axes on `return_ax`.
+        # Accept `show` anyway so the backends present one interface, and translate it --
+        # forwarding it would land in `matplotlib.scatter` as an unknown keyword.
+        show = merged.pop("show", None)
+        if show is False:
+            merged.setdefault("return_ax", True)
         return squidpy.pl.spatial_scatter(adata, **merged)
+
     scanpy = require("scanpy")
+    on_tissue = backend == "scanpy-spatial" or basis == SPATIAL_KEY
+
+    if not on_tissue:
+        merged.setdefault("basis", basis)
+        return scanpy.pl.embedding(adata, **merged)
+
+    # A spatial basis through a scanpy backend: draw it, then impose the image convention
+    # before anything is shown. `sc.pl.spatial` already inverts (it overlays a tissue image),
+    # so this is a no-op there beyond enforcing equal aspect.
+    plt = require("matplotlib").pyplot
+    show = merged.pop("show", None)
     if backend == "scanpy-spatial":
-        return scanpy.pl.spatial(adata, **merged)
-    merged.setdefault("basis", basis)
-    return scanpy.pl.embedding(adata, **merged)
+        result = scanpy.pl.spatial(adata, show=False, **merged)
+    else:
+        merged.setdefault("basis", basis)
+        result = scanpy.pl.embedding(adata, show=False, **merged)
+
+    _apply_image_convention(_as_axes(result))
+    if show is False:
+        return result
+    plt.show()
+    return None
 
 
 def signature(

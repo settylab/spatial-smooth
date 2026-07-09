@@ -196,6 +196,13 @@ def smooth(
 ):
     """Smooth a gene signature through a pipeline of steps and score it per cell.
 
+    .. warning::
+
+       The smoothed score is **for visualization only**. It is spatially autocorrelated by
+       construction, so any statistic computed on it (differential expression, clustering,
+       correlation, a p-value of any kind) will be badly over-confident. Plot ``obs[name]``;
+       analyse ``obs[f"{name}_raw"]``.
+
     The one-liner smooths over physical coordinates with a Gaussian kNN kernel::
 
         import spatial_smooth as ss

@@ -27,8 +27,23 @@ md(
     """\
 # spatial-smooth: a tutorial
 
+> ## ⚠️ This package is for looking, not for measuring
+>
+> `spatial-smooth` makes spatial regions **easier to see**. What it produces is a picture.
+>
+> Smoothing works by making each cell look more like its neighbours. That is exactly what you
+> want when you are trying to spot where a gene programme is switched on — and exactly what you
+> must not feed into a statistical test. Once cells have been made to resemble their neighbours
+> they are no longer independent measurements, so **differential expression, cluster
+> comparisons, correlations and p-values computed on smoothed values are badly over-confident**.
+> They will report strong, convincing structure in data that contains none.
+>
+> Every call writes the unsmoothed score next to the smoothed one, as
+> `adata.obs["<name>_raw"]`. **Look at the smoothed one. Do your statistics on the raw one.**
+
 A per-cell signature score is noisy — each cell is measured independently, so dropout and
-sampling variance dominate. **Smoothing** lets neighbouring cells borrow statistical strength.
+sampling variance dominate, and a real anatomical region can be genuinely hard to pick out of
+the speckle. **Smoothing** lets neighbouring cells borrow statistical strength.
 The scientific choice is *which* neighbours count:
 
 | smoothing | neighbours are… | recovers |
@@ -51,34 +66,19 @@ md(
     """\
 ## Setup
 
-Only `numpy`, `scipy`, `pandas` and `anndata` are hard requirements. The Gaussian-process step
-needs `kompot`, the diffusion map `palantir`, plotting `scanpy` (and optionally `squidpy`). Each
-is imported lazily and, when missing, reported with the exact `pip install` line.
-
 ```bash
 pip install "spatial-smooth[all]"
-# kompot >= 0.8.0 (for `smooth_expression`) is not on PyPI yet:
-pip install "kompot @ git+https://github.com/settylab/kompot.git"
 ```"""
 )
 
 code(
     '''\
 %matplotlib inline
-import os
-
-# Cap thread pools before the scientific stack imports (polite on shared machines).
-os.environ.setdefault("LOKY_MAX_CPU_COUNT", "4")
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
-
 import numpy as np
 import pandas as pd
 import scanpy as sc
 
-import spatial_smooth as ss
-
-sc.settings.verbosity = 1
-ss.check_dependencies()'''
+import spatial_smooth as ss'''
 )
 
 # --------------------------------------------------------------------------------------- #
@@ -189,7 +189,7 @@ md(
 ## 2. Level one — one line, defaults do everything
 
 `ss.smooth` with no `steps` argument smooths over `obsm["spatial"]` with a Gaussian kernel across
-each cell's 100 nearest spatial neighbours. The bandwidth is inferred from the data (six median
+each cell's 400 nearest spatial neighbours. The bandwidth is inferred from the data (six median
 nearest-neighbour distances), so you do not pick a number in microns.
 
 `ss.pl.signature` then plots the raw score next to the smoothed one."""
@@ -218,7 +218,10 @@ prov = ss.provenance(adata, "hippocampus")
 print("genes    :", prov["genes"])
 print("score    :", prov["score"])
 print("pipeline :", [s["kind"] for s in prov["steps"]])
-print("bandwidth:", round(prov["steps"][0]["resolved"]["sigma_used"], 1), "um  (inferred)")'''
+res = prov["steps"][0]["resolved"]
+print("bandwidth:", round(res["sigma_used"], 1), "um nominal;",
+      round(res["sigma_effective"], 1), "um effective",
+      f"({res['kernel_mass_retained']:.0%} of the kernel kept)")'''
 )
 
 # --------------------------------------------------------------------------------------- #
@@ -244,48 +247,43 @@ The cell-state step is a Gaussian-process regression over a diffusion map of the
 manifold (`kompot.smooth_expression`, built on `mellon`). It needs `obsm["DM_EigenVectors"]`;
 with `auto_embed=True` (the default) `spatial-smooth` computes it with Palantir if absent.
 
-The GP is the expensive path, so we subsample for this section — the point is the API, not the
-wall clock."""
+Everything below runs on the **full section** — all 36,419 cells. The Gaussian process is the
+slow step (a few minutes); the two spatial smoothers take about a second each."""
 )
 
 code(
     '''\
-rng = np.random.default_rng(0)
-keep = rng.choice(adata.n_obs, size=12_000, replace=False)
-sub = adata[np.sort(keep)].copy()
-
-%time ss.compute_diffusion_map(sub)           # Palantir -> obsm["DM_EigenVectors"]
-sub.obsm["DM_EigenVectors"].shape'''
+%time ss.compute_diffusion_map(adata)         # Palantir -> obsm["DM_EigenVectors"]
+adata.obsm["DM_EigenVectors"].shape'''
 )
 
 code(
     '''\
 # cell state only: GP over the diffusion map
-%time ss.smooth(sub, HIPPOCAMPUS, "dm_only", steps="dm")
+%time ss.smooth(adata, HIPPOCAMPUS, "dm_only", steps="dm")
 
 # spatial only: Gaussian kNN over tissue coordinates
-%time ss.smooth(sub, HIPPOCAMPUS, "spatial_only", steps="spatial")
+%time ss.smooth(adata, HIPPOCAMPUS, "spatial_only", steps="spatial")
 
 # both, composed: manifold first, then tissue
-%time ss.smooth(sub, HIPPOCAMPUS, "composed", steps="dm+spatial")
+%time ss.smooth(adata, HIPPOCAMPUS, "composed", steps="dm+spatial")
 
-ss.list_results(sub)'''
+ss.list_results(adata)'''
 )
 
 code(
     '''\
 ss.pl.compare(
-    sub, ["spatial_only", "dm_only", "composed"], raw=True,
-    backend="scanpy", ncols=4, size=6, frameon=False,
+    adata, ["spatial_only", "dm_only", "composed"], raw=True,
+    backend="scanpy", ncols=4, frameon=False,
 )'''
 )
 
 md(
     """\
 Read the four panels left to right: the raw score, then each pipeline. Spatial smoothing produces
-the cleanest tissue field. Cell-state smoothing denoises without ever consulting position — its
-field is spatially coherent only because cells of the same type sit together. Composing does both,
-and is the smoothest of the three."""
+the cleanest tissue field. Cell-state smoothing denoises without using position at all. Composing
+does both, and is the smoothest of the three."""
 )
 
 md(
@@ -311,7 +309,7 @@ code(
 ss.pl.signature(
     adata, "hippocampus", raw=False,
     backend="scanpy",          # -> scanpy.pl.embedding
-    cmap="magma", size=4, vmax="p99.5", frameon=False,
+    cmap="magma", vmax="p99.5", frameon=False,
     title="hippocampal signature, smoothed",
 )'''
 )
@@ -364,7 +362,7 @@ a *specification*, not a fitted object, so it can be reused and is recorded verb
 code(
     '''\
 pipeline = [
-    ss.KompotGP(basis="DM_EigenVectors", ls_factor=10.0, n_landmarks=2000),
+    ss.KompotGP(basis="DM_EigenVectors", ls_factor=10.0, n_landmarks=5000),
     ss.KnnGaussian(basis="spatial", k=64, sigma_factor=4.0),
 ]
 pipeline'''
@@ -372,10 +370,10 @@ pipeline'''
 
 code(
     '''\
-%time ss.smooth(sub, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
+%time ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
 
-print("smoothed score      :", sub.obs["custom"].shape)
-print("smoothed expression :", sub.obsm["custom_smoothed"].shape)   # store_genes=True'''
+print("smoothed score      :", adata.obs["custom"].shape)
+print("smoothed expression :", adata.obsm["custom_smoothed"].shape)   # store_genes=True'''
 )
 
 md(
@@ -399,7 +397,7 @@ code(
     '''\
 import anndata as ad
 
-sub.write_h5ad("smoothed.h5ad")
+adata.write_h5ad("smoothed.h5ad")
 
 reloaded = ad.read_h5ad("smoothed.h5ad")
 print("stored results:", ss.list_results(reloaded))
@@ -412,7 +410,7 @@ for step in prov["steps"]:
 code(
     '''\
 # No recomputation: this is a table lookup and a scatter plot.
-%time ss.pl.signature(reloaded, "custom", backend="scanpy", size=8, frameon=False)'''
+%time ss.pl.signature(reloaded, "custom", backend="scanpy", frameon=False)'''
 )
 
 md(
@@ -467,10 +465,12 @@ ss.smooth(adata, HIPPOCAMPUS, "spatial_gp", steps="spatial-gp")
 
 ### Where to go next
 
-* `ss.provenance(adata, name)` — exactly what was run, with resolved bandwidths.
-* `ss.check_dependencies()` — what is installed, and the pip line for what is not.
-* The **Concepts** page of the documentation — composition semantics, the scoring contract, and
-  why gene-level smoothing costs nothing in correctness."""
+* `ss.provenance(adata, name)` — exactly what was run, with the bandwidths it resolved.
+* The **[Concepts](https://settylab.github.io/spatial-smooth/concepts.html)** page — composition
+  semantics, the scoring contract, and why gene-level smoothing costs nothing in correctness.
+
+And once more, because it is the thing that matters: **these smoothed values are for looking at.**
+Do your statistics on `adata.obs["hippocampus_raw"]`."""
 )
 
 nb["cells"] = cells

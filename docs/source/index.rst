@@ -1,12 +1,29 @@
 spatial-smooth
 ==============
 
-**Composable smoothing of gene signatures over space and cell state.**
+**Composable smoothing of gene-set signatures over space and cell state.**
+
+.. danger::
+
+   **This package is for visualization only.** It exists to make spatial regions easier to see.
+   Its output is a picture, not data.
+
+   Smoothing deliberately makes neighbouring cells look like one another. That is exactly what
+   you want when you are trying to *see* where a program is active, and exactly what you must
+   not hand to a statistical test. A smoothed score is spatially autocorrelated by construction:
+   the cells are no longer independent observations, so differential expression, differential
+   abundance, clustering, correlations and p-values computed on smoothed values will find
+   "significant" structure in pure noise.
+
+   **Look at the smoothed values. Do the statistics on the raw ones**
+   (``adata.obs[f"{name}_raw"]``, which every call writes for you), using a method that accounts
+   for spatial dependence.
 
 Every cell in a single-cell or spatial assay is measured independently, so a per-cell signature
-score is dominated by dropout and sampling noise. Smoothing lets neighbouring cells borrow
-statistical strength: a speckled score becomes a coherent field. *Which* neighbours count is the
-scientific choice, and this package makes it explicit.
+score is dominated by dropout and sampling noise -- a speckle of dots in which a real anatomical
+region is genuinely hard to spot. Smoothing lets neighbouring cells borrow statistical strength,
+turning that speckle into a coherent field you can read at a glance. *Which* neighbours count is
+the scientific choice, and this package makes it explicit.
 
 .. list-table::
    :header-rows: 1
@@ -47,6 +64,17 @@ Results are written into the :class:`~anndata.AnnData`. Save it, ship it, reload
    concepts
    tutorial
    api
+
+Links
+-----
+
+* **Source code:** `github.com/settylab/spatial-smooth <https://github.com/settylab/spatial-smooth>`_
+  (private; ask the `Setty Lab <https://setty-lab.org>`_ for access)
+* **Issue tracker:** `github.com/settylab/spatial-smooth/issues <https://github.com/settylab/spatial-smooth/issues>`_
+* **Setty Lab:** `setty-lab.org <https://setty-lab.org>`_ -- Fred Hutchinson Cancer Center
+* **Related:** `kompot <https://github.com/settylab/kompot>`_ (the GP backend),
+  `mellon <https://github.com/settylab/mellon>`_ (its GP engine),
+  `palantir <https://github.com/settylab/palantir>`_ (diffusion maps)
 
 Indices
 -------

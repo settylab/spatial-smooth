@@ -1,9 +1,23 @@
 """spatial_smooth -- composable smoothing of gene signatures over space and cell state.
 
+.. warning::
+
+   **This package is for visualization only.** It exists to make spatial regions easier to see.
+   Its output is a *rendering aid*, not data.
+
+   Do not feed smoothed values into differential expression, differential abundance, clustering,
+   correlation, or any other statistic. Smoothing deliberately makes neighbouring cells resemble
+   each other, so a smoothed score is spatially autocorrelated by construction: cells stop being
+   independent observations, effective sample size collapses, and p-values come out far too
+   small. A test run on smoothed values will find "significant" structure in pure noise.
+
+   Look at the smoothed field. Run the statistics on ``adata.obs[f"{name}_raw"]`` -- or on the
+   unsmoothed expression -- with a method that models spatial dependence.
+
 Every cell in a single-cell or spatial assay is measured independently, so a per-cell signature
 score is dominated by dropout and sampling noise. Smoothing lets neighbouring cells borrow
-statistical strength: a speckled score becomes a coherent field. *Which* neighbours count is the
-scientific choice this package makes explicit.
+statistical strength: a speckled score becomes a coherent field you can actually see. *Which*
+neighbours count is the scientific choice this package makes explicit.
 
 * **Spatial smoothing** -- neighbours are physical neighbours (``obsm["spatial"]``). Recovers
   tissue architecture: niches, layers, gradients.

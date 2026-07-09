@@ -5,7 +5,7 @@ Each function here maps ``(coords, values) -> smoothed values`` and knows nothin
 point's value by a weighted average of its neighbours' values with weights summing to one:
 
 * :func:`knn_gaussian_operator` -- a sparse Gaussian kernel over the ``k`` nearest neighbours.
-* :func:`kde_operator_apply` -- a fine-grid FFT Nadaraya-Watson estimator.
+* :func:`smooth_matrix_kde` -- a fine-grid FFT Nadaraya-Watson estimator.
 
 Row-stochasticity is the property that makes the package's scoring contract exact: a constant
 field is left unchanged, so smoothing the individual genes and then combining them into a
@@ -57,10 +57,11 @@ def median_nn_distance(coords, *, workers: int = -1) -> float:
 def knn_gaussian_operator(
     coords,
     *,
-    k: int = 100,
+    k: int = 400,
     sigma: Optional[float] = None,
     sigma_factor: float = 6.0,
     workers: int = -1,
+    return_info: bool = False,
 ):
     """Build the sparse row-stochastic Gaussian kNN smoothing operator ``W``.
 
@@ -68,41 +69,56 @@ def knn_gaussian_operator(
     ``i`` (self included), each row normalised to sum to one. Applying ``W`` to any field
     replaces every value with the Gaussian-weighted mean of its ``k`` nearest neighbours.
 
-    This is the classic fixed-bandwidth spatial smoother. It costs one ``cKDTree`` query
-    (``O(n log n)``) plus a sparse mat-vec (``O(n * k)``) per field -- orders of magnitude
-    cheaper than a Gaussian-process fit, and the recommended default for smoothing over
-    physical tissue coordinates.
+    It costs one ``cKDTree`` query (``O(n log n)``) plus a sparse mat-vec (``O(n * k)``) per
+    field -- orders of magnitude cheaper than a Gaussian-process fit, and the recommended
+    default for smoothing over physical tissue coordinates.
 
     Parameters
     ----------
     coords
         ``(n, d)`` array of coordinates (physical positions, or any embedding).
     k
-        Neighbours per point, including the point itself. Capped at ``n``.
+        Neighbours per point, including the point itself. Capped at ``n``. See the truncation
+        note below -- ``k`` is not a free performance knob, it changes the estimator.
     sigma
         Gaussian bandwidth in coordinate units. ``None`` (default) sets it scale-invariantly
         to ``sigma_factor * median_nn_distance(coords)``.
     sigma_factor
         Multiplier on the median nearest-neighbour distance when ``sigma`` is inferred. The
-        default ``6.0`` (~6 cell spacings) reproduces the ~50 um bandwidth conventionally used
-        on imaging-based spatial assays with ~8 um cell spacing.
+        default ``6.0`` is ~6 cell spacings.
     workers
         Threads for the kd-tree query (``-1`` uses all cores; cap via the environment on a
         shared machine).
+    return_info
+        Also return a diagnostics dict (see below).
 
     Returns
     -------
     W : scipy.sparse.csr_matrix
         ``(n, n)`` row-stochastic operator.
     sigma : float
-        The bandwidth actually used.
+        The *nominal* bandwidth: the ``sigma`` of the Gaussian before truncation.
+    info : dict, only if ``return_info``
+        ``kernel_mass_retained`` -- the mean fraction of the untruncated 2-D Gaussian's mass
+        that falls inside each point's ``k``-neighbour radius; ``sigma_effective`` -- the mean
+        bandwidth actually applied, recovered from the weighted second moment
+        (``sqrt(E_w[d**2] / 2)``); and its 1st/99th percentiles across points.
 
     Notes
     -----
-    ``k`` truncates the kernel: neighbours beyond the ``k``-th are given zero weight even if
-    ``sigma`` would assign them a non-negligible one. Keep ``k`` comfortably larger than the
-    number of points within ``~2 * sigma`` (the default ``k=100`` / ``sigma_factor=6`` pairing
-    is calibrated for 2-D tissue).
+    **Truncation makes the kernel density-adaptive.** Neighbours beyond the ``k``-th get zero
+    weight even where ``sigma`` would give them a real one, so the *effective* bandwidth is set
+    by whichever of ``sigma`` and the ``k``-neighbour radius binds first. Because the radius is
+    fixed by a neighbour *count*, it shrinks in dense regions and grows in sparse ones: this is
+    a truncated-Gaussian kNN smoother, not a strictly fixed-bandwidth one.
+
+    The default ``k=400`` with ``sigma_factor=6.0`` retains ~96% of the kernel mass on 2-D
+    tissue (~210 points lie within ``2 * sigma`` at typical imaging-assay densities), so the
+    truncation is mild and ``sigma`` and ``sigma_effective`` nearly agree. Lowering ``k``
+    tightens the smoother and *reduces* the effective bandwidth: at ``k=100`` only ~58% of the
+    mass survives, ``sigma_effective`` falls to ~0.6 * ``sigma``, and it varies ~2.8x across
+    cells with local density. Quote ``sigma_effective``, not ``sigma``, in a methods section --
+    :func:`spatial_smooth.provenance` records both.
     """
     np = require("numpy")
     scipy = require("scipy")
@@ -134,19 +150,36 @@ def knn_gaussian_operator(
 
     rows = np.repeat(np.arange(n), k)
     W = sparse.csr_matrix((w.ravel(), (rows, idx.ravel())), shape=(n, n))
-    return W, sigma
+    if not return_info:
+        return W, sigma
+
+    # Mass of an untruncated 2-D Gaussian inside the k-th neighbour radius, and the bandwidth
+    # the truncated kernel actually behaves like (E_w[d^2] = 2 * sigma^2 for a 2-D Gaussian).
+    r_k = dist[:, -1]
+    mass = 1.0 - np.exp(-(r_k ** 2) / (2.0 * sigma ** 2))
+    sigma_eff = np.sqrt((w * dist ** 2).sum(axis=1) / 2.0)
+    info = {
+        "kernel_mass_retained": float(mass.mean()),
+        "sigma_effective": float(sigma_eff.mean()),
+        "sigma_effective_p1": float(np.percentile(sigma_eff, 1)),
+        "sigma_effective_p99": float(np.percentile(sigma_eff, 99)),
+    }
+    return W, sigma, info
 
 
 def smooth_matrix_knn_gaussian(
     coords,
     matrix,
     *,
-    k: int = 100,
+    k: int = 400,
     sigma: Optional[float] = None,
     sigma_factor: float = 6.0,
     workers: int = -1,
 ):
     """Apply :func:`knn_gaussian_operator` to every column of ``matrix``.
+
+    See that function's Notes on ``k``-truncation: the kernel is truncated-Gaussian and
+    implicitly density-adaptive, and the returned ``sigma`` is the *nominal* one.
 
     Parameters
     ----------
@@ -213,8 +246,10 @@ def smooth_matrix_kde(
         Multiplier on the median nearest-neighbour distance when ``bw`` is inferred.
     min_density_pct
         Grid cells whose uniform-KDE density falls below this percentile (of the positive
-        densities) are treated as empty background and left out of the interpolation, so blank
-        tissue does not invent signal.
+        densities) are treated as empty background: they are excluded from the Nadaraya-Watson
+        ratio and then **backfilled with the field's median** before interpolation, which stops
+        NaNs bleeding inward from the tissue edge. Background therefore contributes the median,
+        not nothing -- it cannot invent structure, but it is not absent either.
 
     Returns
     -------
@@ -227,6 +262,12 @@ def smooth_matrix_kde(
     its kernel's practical support numerically, and that solve is not scale-free -- it raises on
     a bandwidth of a few hundred microns even though such a bandwidth is perfectly ordinary on a
     tissue section. Rescaling makes the smoother genuinely invariant to the coordinate units.
+
+    A constant column is returned unchanged. Smoothing a constant field is the identity for any
+    row-stochastic estimator, and the Nadaraya-Watson ratio cannot express it: KDEpy normalises
+    its weights by their sum, so an all-zero weight vector (which a constant column becomes after
+    the affine shift) divides by zero. A gene absent from the selected cells is routine, so this
+    is a real input, not a pathological one.
     """
     np = require("numpy")
     scipy = require("scipy")
@@ -270,6 +311,11 @@ def smooth_matrix_kde(
     out = np.empty_like(matrix)
     for j in range(matrix.shape[1]):
         values = matrix[:, j]
+        if not np.ptp(values) > 0:
+            # Constant column: the identity for a row-stochastic smoother, and the only input
+            # for which KDEpy's weight normalisation divides by zero. See the Notes above.
+            out[:, j] = values
+            continue
         shift = float(values.min())
         v_pos = values - shift  # KDEpy weights must be non-negative
         _, dens_v = FFTKDE(bw=bw_scaled).fit(coords, weights=v_pos).evaluate(grid_points)

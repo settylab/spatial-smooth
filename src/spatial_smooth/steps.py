@@ -123,22 +123,47 @@ class Step:
         return np.asarray(adata.obsm[self.basis], dtype=np.float64)
 
 
+#: Warn when the ``k``-neighbour truncation discards more than this fraction of the kernel.
+MIN_KERNEL_MASS = 0.9
+
+
 @dataclass(frozen=True)
 class KnnGaussian(Step):
     """Gaussian kernel over the ``k`` nearest neighbours -- the fast default.
 
     A row-stochastic linear smoother (see :mod:`spatial_smooth.smoothers`): each cell's value
     becomes the Gaussian-weighted mean of its ``k`` nearest neighbours in ``basis``. On a
-    full imaging-based slide (~1.6e5 cells) this runs in about a second, against several
+    full imaging-based slide (~1.6e5 cells) this runs in a second or two, against several
     minutes for the Gaussian process at comparable output quality -- so it is the default for
     smoothing over physical tissue coordinates.
+
+    Truncation, and what `provenance` reports
+    -----------------------------------------
+    Restricting the kernel to ``k`` neighbours truncates it. Whichever binds first -- ``sigma``
+    or the radius of the ``k``-th neighbour -- sets the bandwidth the data actually sees, and
+    because that radius follows a neighbour *count* it shrinks where cells are dense and grows
+    where they are sparse. The smoother is therefore **truncated-Gaussian and implicitly
+    density-adaptive**, not strictly fixed-bandwidth.
+
+    :func:`spatial_smooth.provenance` records this rather than hiding it. Alongside the nominal
+    ``sigma_used`` it stores ``kernel_mass_retained`` (the mean fraction of the untruncated
+    Gaussian inside each cell's ``k``-neighbour radius), ``sigma_effective`` (the bandwidth the
+    kernel behaves like, from its weighted second moment) and that quantity's 1st/99th
+    percentiles across cells. **Quote ``sigma_effective`` in a methods section, not
+    ``sigma_used``.** When the retained mass falls below ``MIN_KERNEL_MASS`` a ``UserWarning``
+    names both numbers and tells you to raise ``k``.
+
+    The default ``k=400`` keeps ~96% of the mass at ``sigma_factor=6.0`` on 2-D tissue, where
+    roughly 210 cells lie within ``2 * sigma``; ``sigma_effective`` then tracks ``sigma_used``
+    closely. (``k=100`` retains only ~58%, pulling the effective bandwidth to ~0.6 x ``sigma``
+    with a ~2.8x spread across cells.)
 
     Parameters
     ----------
     basis
         ``adata.obsm`` key to smooth over. Defaults to ``"spatial"``.
     k
-        Neighbours per cell, self included.
+        Neighbours per cell, self included. Not a free performance knob -- see above.
     sigma
         Bandwidth in coordinate units. ``None`` (default) infers it scale-invariantly as
         ``sigma_factor`` x the median nearest-neighbour distance.
@@ -149,7 +174,7 @@ class KnnGaussian(Step):
     """
 
     basis: str = SPATIAL_KEY
-    k: int = 100
+    k: int = 400
     sigma: Optional[float] = None
     sigma_factor: float = 6.0
     workers: int = -1
@@ -157,17 +182,34 @@ class KnnGaussian(Step):
     kind: str = field(default="knn_gaussian", init=False, repr=False)
 
     def apply(self, matrix, adata, genes, *, progress: bool = False):
-        from .smoothers import smooth_matrix_knn_gaussian
+        np = require("numpy")
+        from .smoothers import knn_gaussian_operator
 
-        out, sigma_used = smooth_matrix_knn_gaussian(
+        W, sigma_used, info = knn_gaussian_operator(
             self._coords(adata),
-            matrix,
             k=self.k,
             sigma=self.sigma,
             sigma_factor=self.sigma_factor,
             workers=self.workers,
+            return_info=True,
         )
-        return out, {"sigma_used": float(sigma_used), "k_used": int(min(self.k, adata.n_obs))}
+        matrix = np.asarray(matrix, dtype=np.float64)
+        out = np.asarray(W @ matrix)
+
+        if info["kernel_mass_retained"] < MIN_KERNEL_MASS:
+            warnings.warn(
+                f"KnnGaussian(k={self.k}) truncates the kernel: only "
+                f"{info['kernel_mass_retained']:.0%} of the Gaussian mass falls within each "
+                f"cell's {self.k}-neighbour radius, so the effective bandwidth is "
+                f"{info['sigma_effective']:.3g} (nominal sigma {sigma_used:.3g}) and varies with "
+                f"local density. Raise k, or quote provenance()'s 'sigma_effective'.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        resolved = {"sigma_used": float(sigma_used), "k_used": int(min(self.k, adata.n_obs))}
+        resolved.update(info)
+        return out, resolved
 
 
 @dataclass(frozen=True)

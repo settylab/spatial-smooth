@@ -126,3 +126,9 @@ def test_unknown_backend_rejected(smoothed):
 def test_available_backends_is_honest():
     backends = pl.available_backends()
     assert set(backends) <= set(pl.BACKENDS)
+
+
+def test_caller_supplied_color_raises_instead_of_being_ignored(smoothed):
+    """Silently dropping `color` is the wrong failure mode under 'full control of the plot'."""
+    with pytest.raises(TypeError, match="cannot be overridden"):
+        pl.signature(smoothed, "sig", backend="scanpy", show=False, color=["something_else"])

@@ -2,11 +2,27 @@
 
 **Composable smoothing of gene-set signatures over space and cell state.**
 
-📖 **[Documentation](https://settylab.github.io/spatial-smooth/)** · [Tutorial notebook](notebooks/tutorial.ipynb)
+📖 **[Documentation](https://settylab.github.io/spatial-smooth/)** · [Tutorial notebook](notebooks/tutorial.ipynb) · [Setty Lab](https://setty-lab.org)
+
+> ## ⚠️ For visualization only
+>
+> **This package makes spatial regions easier to see. Its output is a picture, not data.**
+>
+> Smoothing deliberately makes neighbouring cells look like one another — which is what you want
+> when you are trying to *spot* where a program is active, and what you must never hand to a
+> statistical test. A smoothed score is spatially autocorrelated by construction: the cells stop
+> being independent observations, so differential expression, differential abundance, clustering,
+> correlations and p-values computed on smoothed values will report "significant" structure in
+> pure noise.
+>
+> **Look at the smoothed values. Run the statistics on the raw ones** — every call writes
+> `adata.obs[f"{name}_raw"]` for exactly that purpose — with a method that accounts for spatial
+> dependence.
 
 Every cell is measured independently, so a per-cell signature score is dominated by dropout and
-sampling noise. Smoothing lets neighbouring cells borrow statistical strength: a speckled score
-becomes a coherent field.
+sampling noise: a speckle of dots in which a real anatomical region is genuinely hard to spot.
+Smoothing lets neighbouring cells borrow statistical strength, turning that speckle into a
+coherent field you can read at a glance.
 
 ```python
 import spatial_smooth as ss
@@ -34,9 +50,6 @@ imported lazily and reported with the exact `pip install` line when missing: `dm
 `embedding` (`palantir`), `plot` (`scanpy`), `squidpy`, `kde` (`KDEpy`). Run
 `ss.check_dependencies()` to see where you stand.
 
-> `kompot >= 0.8.0` exposes `smooth_expression`; PyPI still carries 0.7.x. Until it ships:
-> `pip install "kompot @ git+https://github.com/settylab/kompot.git"`
-
 **Your data needs exactly two things:** log-normalised expression in `adata.X` (or a named
 `layer`), and coordinates in `adata.obsm["spatial"]`.
 
@@ -54,10 +67,9 @@ ss.smooth(adata, genes, "sig", steps="dm+spatial") # both, in that order
 
 ![the three composition modes](docs/source/_static/composition_modes.png)
 
-*The same signature, four ways. **Spatial** smoothing averages over physically adjacent cells and
-recovers tissue architecture. **Cell-state** smoothing averages over transcriptionally similar
-cells (a diffusion map) — it never consults position, yet its field is spatially coherent because
-cells of a type sit together. **Composed** does the manifold first, then the tissue.*
+*The same signature, four ways. **Spatial** smoothing averages over physically adjacent cells.
+**Cell-state** smoothing averages over transcriptionally similar cells (a diffusion map), without
+using position at all. **Composed** does the manifold first, then the tissue.*
 
 A pipeline is an ordered list of steps; each smooths the expression matrix over one embedding and
 hands the result to the next. Doing just one of the two is a one-element pipeline, not a special
@@ -111,9 +123,15 @@ reloaded file.
 (`backend=`, default `"auto"`).
 
 ```python
-ss.pl.signature(adata, "sig", backend="squidpy", cmap="magma", size=6, figsize=(6, 6))
+ss.pl.signature(adata, "sig", backend="squidpy", cmap="magma", figsize=(6, 6))
 ss.pl.compare(adata, ["spatial_only", "dm_only", "composed"], raw=True, ncols=4)
 ```
+
+Two conventions are normalised for you, because leaving them to the backend gave different
+pictures of the same tissue. A **spatial basis is always drawn in image convention** — y
+increasing downward, equal aspect — so scanpy and squidpy agree on which way is up. And `size`
+is left alone: it is the marker area in `scanpy` and a *scale factor* in `squidpy`, so a value
+that looks right in one is nearly invisible in the other. Omit it and take the backend's default.
 
 ---
 
@@ -127,6 +145,13 @@ ss.pl.compare(adata, ["spatial_only", "dm_only", "composed"], raw=True, ncols=4)
 
 Bandwidths default to a multiple of the median nearest-neighbour distance, so the same factor
 smooths the same amount whether coordinates are in microns or millimetres.
+
+**Quote `sigma_effective`, not `sigma_used`.** `KnnGaussian` truncates its Gaussian at the `k`-th
+neighbour, so the bandwidth the data actually sees is set by whichever of `sigma` and the
+`k`-neighbour radius binds first — and since that radius follows a neighbour *count*, the kernel
+is implicitly density-adaptive. `provenance()` records `kernel_mass_retained`, `sigma_effective`
+and its spread across cells alongside the nominal `sigma_used`, and warns when the truncation
+starts to bite. The default `k=400` keeps ~96% of the kernel mass, so the two nearly agree.
 
 > **One caveat.** Over a diffusion map, kompot's native `ls_factor=10` is right. Over *physical*
 > coordinates it is ~200× the cell spacing and collapses the field into a single global gradient.

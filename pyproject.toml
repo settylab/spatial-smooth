@@ -32,10 +32,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# GP smoothing over a cell-state embedding (kompot.smooth_expression).
-# kompot >= 0.8.0 is required for the `smooth_expression` entry point; releases
-# on PyPI are older, so install from the source repository until 0.8.0 ships.
-dm = ["kompot>=0.8.0"]
+# GP smoothing over a cell-state embedding (kompot.smooth_expression), on PyPI since 0.7.0.
+dm = ["kompot>=0.7.0"]
 # Diffusion-map embedding used by the `dm` step when `obsm["DM_EigenVectors"]` is absent.
 embedding = ["palantir>=1.4"]
 # Plotting backends.
@@ -43,7 +41,7 @@ plot = ["scanpy>=1.9", "matplotlib>=3.6"]
 squidpy = ["squidpy>=1.4"]
 # Fine-grid FFT Nadaraya-Watson smoother (`Kde` step).
 kde = ["KDEpy>=1.1"]
-test = ["pytest>=7.0", "scanpy>=1.9", "matplotlib>=3.6", "KDEpy>=1.1"]
+test = ["pytest>=7.0", "scanpy>=1.9", "matplotlib>=3.6", "KDEpy>=1.1", "squidpy>=1.4"]
 # The plotting backends are imported lazily, so the docs build needs none of them --
 # `autodoc_mock_imports` covers the rest. Keeps the RTD environment small and resolvable.
 docs = [
@@ -53,7 +51,7 @@ docs = [
     "sphinx-copybutton>=0.5",
 ]
 all = [
-    "kompot>=0.8.0",
+    "kompot>=0.7.0",
     "palantir>=1.4",
     "scanpy>=1.9",
     "matplotlib>=3.6",
@@ -63,7 +61,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/settylab/spatial-smooth"
-Documentation = "https://spatial-smooth.readthedocs.io/"
+Documentation = "https://settylab.github.io/spatial-smooth/"
 "Bug Tracker" = "https://github.com/settylab/spatial-smooth/issues"
 
 [tool.setuptools]
