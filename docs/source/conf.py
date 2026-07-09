@@ -34,7 +34,7 @@ autodoc_default_options = {
     "show-inheritance": True,
 }
 # Documentation must build without the optional scientific stack installed.
-autodoc_mock_imports = ["kompot", "palantir", "squidpy", "KDEpy"]
+autodoc_mock_imports = ["kompot", "palantir", "scanpy", "squidpy", "KDEpy", "matplotlib"]
 
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True

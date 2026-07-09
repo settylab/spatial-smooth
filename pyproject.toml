@@ -44,13 +44,13 @@ squidpy = ["squidpy>=1.4"]
 # Fine-grid FFT Nadaraya-Watson smoother (`Kde` step).
 kde = ["KDEpy>=1.1"]
 test = ["pytest>=7.0", "scanpy>=1.9", "matplotlib>=3.6", "KDEpy>=1.1"]
+# The plotting backends are imported lazily, so the docs build needs none of them --
+# `autodoc_mock_imports` covers the rest. Keeps the RTD environment small and resolvable.
 docs = [
     "sphinx>=7.0,<9",
     "furo>=2024.1.29",
     "myst-nb>=1.1",
     "sphinx-copybutton>=0.5",
-    "scanpy>=1.9",
-    "matplotlib>=3.6",
 ]
 all = [
     "kompot>=0.8.0",

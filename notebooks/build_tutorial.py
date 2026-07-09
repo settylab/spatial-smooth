@@ -64,6 +64,7 @@ pip install "kompot @ git+https://github.com/settylab/kompot.git"
 
 code(
     '''\
+%matplotlib inline
 import os
 
 # Cap thread pools before the scientific stack imports (polite on shared machines).
