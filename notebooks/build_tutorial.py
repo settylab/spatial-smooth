@@ -337,9 +337,12 @@ ss.smooth(rescaled, HIPPOCAMPUS, "hippocampus")
 
 a = adata.obs["hippocampus"].to_numpy()
 b = rescaled.obs["hippocampus"].to_numpy()
-print("max |difference| :", np.abs(a - b).max())
-print("sigma (um)  :", round(ss.provenance(adata, "hippocampus")["steps"][0]["resolved"]["sigma_used"], 2))
-print("sigma (nm)  :", round(ss.provenance(rescaled, "hippocampus")["steps"][0]["resolved"]["sigma_used"], 2))'''
+ra = ss.provenance(adata, "hippocampus")["steps"][0]["resolved"]
+rb = ss.provenance(rescaled, "hippocampus")["steps"][0]["resolved"]
+print("max |difference|      :", np.abs(a - b).max())
+print("sigma_effective (um)  :", round(ra["sigma_effective"], 2))
+print("sigma_effective (nm)  :", round(rb["sigma_effective"], 2))
+print("(nominal was", round(ra["sigma_nominal"], 2), "um -- the number NOT to quote)")'''
 )
 
 md(
@@ -370,7 +373,15 @@ pipeline'''
 
 code(
     '''\
-ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
+import warnings
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
+
+for w in caught:
+    print(f"{w.category.__name__}: {w.message}")
+    print()
 
 print("smoothed score      :", adata.obs["custom"].shape)
 print("smoothed expression :", adata.obsm["custom_smoothed"].shape)   # store_genes=True'''
@@ -378,6 +389,29 @@ print("smoothed expression :", adata.obsm["custom_smoothed"].shape)   # store_ge
 
 md(
     """\
+### Read the warning — it is doing its job
+
+That pipeline chose `k=64`, and the package objected. Restricting the Gaussian to a cell's 64
+nearest neighbours **cuts the kernel off** before it has faded: only ~69% of its weight lies
+inside that radius. The bandwidth the data actually feels is therefore *narrower* than the
+nominal `sigma`, and — because 64 neighbours reach further apart in sparse tissue than in dense
+tissue — it is **not the same in every cell**.
+
+Nothing here is broken. A truncated Gaussian is a perfectly respectable smoother. But if you were
+to write "we smoothed with a Gaussian of σ = 52 µm" in a methods section, you would be reporting a
+number the code never applied. That is what the warning is for, and it tells you exactly which
+number to quote instead:
+
+```python
+res = ss.provenance(adata, "custom")["steps"][1]["resolved"]
+res["sigma_used"]            # 52.1  <- nominal; do NOT quote this
+res["sigma_effective"]       # 35.7  <- what the kernel behaves like; quote this
+res["kernel_mass_retained"]  # 0.69  <- how much of the Gaussian survived
+```
+
+Raise `k` (the default, 400, keeps ~96% of the mass) and the warning goes away, `sigma_effective`
+converges on `sigma_used`, and the smoother becomes effectively fixed-bandwidth.
+
 ### The persistence contract
 
 Everything is in the `AnnData`:
@@ -480,6 +514,23 @@ nb["metadata"] = {
     "language_info": {"name": "python", "pygments_lexer": "ipython3"},
 }
 
+# Compile every code cell before writing. A syntax error otherwise costs a whole cluster run --
+# nbconvert only discovers it when the kernel reaches that cell, minutes in.
+_bad = []
+for _i, _cell in enumerate(cells):
+    if _cell["cell_type"] != "code":
+        continue
+    _src = "\n".join(
+        "pass" if _line.strip().startswith(("%", "!")) else _line
+        for _line in _cell["source"].splitlines()
+    )
+    try:
+        compile(_src, f"cell{_i}", "exec")
+    except SyntaxError as _exc:  # pragma: no cover
+        _bad.append(f"cell {_i}: {_exc}")
+if _bad:
+    raise SystemExit("refusing to write a notebook with syntax errors:\n  " + "\n  ".join(_bad))
+
 out = pathlib.Path(__file__).parent / "tutorial.ipynb"
 nbf.write(nb, out)
-print(f"wrote {out} ({len(cells)} cells)")
+print(f"wrote {out} ({len(cells)} cells, all code cells compile)")

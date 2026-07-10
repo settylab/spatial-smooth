@@ -145,12 +145,13 @@ class KnnGaussian(Step):
     where they are sparse. The smoother is therefore **truncated-Gaussian and implicitly
     density-adaptive**, not strictly fixed-bandwidth.
 
-    :func:`spatial_smooth.provenance` records this rather than hiding it. Alongside the nominal
-    ``sigma_used`` it stores ``kernel_mass_retained`` (the mean fraction of the untruncated
+    :func:`spatial_smooth.provenance` records this rather than hiding it. Alongside
+    ``sigma_nominal`` (the Gaussian's sigma before truncation -- a bandwidth no cell experiences;
+    also written as ``sigma_used`` for backwards compatibility) it stores ``kernel_mass_retained`` (the mean fraction of the untruncated
     Gaussian inside each cell's ``k``-neighbour radius), ``sigma_effective`` (the bandwidth the
     kernel behaves like, from its weighted second moment) and that quantity's 1st/99th
-    percentiles across cells. **Quote ``sigma_effective`` in a methods section, not
-    ``sigma_used``.** When the retained mass falls below ``MIN_KERNEL_MASS`` a ``UserWarning``
+    percentiles across cells. **Quote ``sigma_effective`` in a methods section, never
+    ``sigma_nominal``/``sigma_used``.** When the retained mass falls below ``MIN_KERNEL_MASS`` a ``UserWarning``
     names both numbers and tells you to raise ``k``.
 
     The default ``k=400`` keeps ~96% of the mass at ``sigma_factor=6.0`` on 2-D tissue, where
@@ -183,8 +184,9 @@ class KnnGaussian(Step):
 
     def apply(self, matrix, adata, genes, *, progress: bool = False):
         np = require("numpy")
-        from .smoothers import knn_gaussian_operator
+        from .smoothers import _require_finite, knn_gaussian_operator
 
+        _require_finite(matrix, f"{type(self).__name__}")
         W, sigma_used, info = knn_gaussian_operator(
             self._coords(adata),
             k=self.k,
@@ -207,7 +209,14 @@ class KnnGaussian(Step):
                 stacklevel=3,
             )
 
-        resolved = {"sigma_used": float(sigma_used), "k_used": int(min(self.k, adata.n_obs))}
+        # `sigma_nominal` is the honest name: it is the Gaussian's sigma *before* truncation, a
+        # bandwidth no cell actually experiences. `sigma_used` is retained as an alias because it
+        # is already written into stored .h5ad files, but it reads as an answer and is not one.
+        resolved = {
+            "sigma_nominal": float(sigma_used),
+            "sigma_used": float(sigma_used),
+            "k_used": int(min(self.k, adata.n_obs)),
+        }
         resolved.update(info)
         return out, resolved
 
@@ -392,7 +401,7 @@ def resolve_steps(spec: StepSpec) -> List[Step]:
     Examples
     --------
     >>> resolve_steps("spatial")                       # doctest: +ELLIPSIS
-    [KnnGaussian(basis='spatial', k=100, ...)]
+    [KnnGaussian(basis='spatial', k=400, ...)]
     >>> len(resolve_steps("dm+spatial"))
     2
     >>> resolve_steps(None)

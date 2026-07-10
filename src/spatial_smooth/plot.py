@@ -47,6 +47,7 @@ the constant, so the section renders continuous. Pass ``size`` yourself to overr
 """
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Sequence
 
 from ._deps import have, require
@@ -98,12 +99,27 @@ def _resolve_backend(backend: str) -> str:
 
 
 def _default_basis(adata, records: Sequence[Dict[str, Any]]) -> str:
-    """Plot over the last step's basis when that is a 2-D physical basis, else fall back."""
-    for record in reversed(records):
-        for step in reversed(record.get("steps", [])):
-            basis = step.get("basis")
-            if basis == SPATIAL_KEY and basis in adata.obsm:
-                return basis
+    """Plot over the last step's basis when that is a 2-D physical basis, else fall back.
+
+    A result smoothed over ``"spatial"`` must not quietly land on a UMAP because the coordinates
+    were dropped: the picture would look plausible and mean nothing. If the recorded basis is
+    missing, say so.
+    """
+    wanted = {
+        step.get("basis")
+        for record in records
+        for step in record.get("steps", [])
+        if step.get("basis") == SPATIAL_KEY
+    }
+    if wanted and SPATIAL_KEY not in adata.obsm:
+        raise KeyError(
+            f"this result was smoothed over adata.obsm[{SPATIAL_KEY!r}], which is no longer "
+            f"present (obsm has {sorted(adata.obsm)}). Restore it, or pass basis=... explicitly "
+            "to state deliberately that you want the field drawn on another embedding."
+        )
+    if SPATIAL_KEY in adata.obsm and wanted:
+        return SPATIAL_KEY
+
     for candidate in (SPATIAL_KEY, "X_umap", "umap", "X_pca"):
         if candidate in adata.obsm:
             return candidate
@@ -120,9 +136,19 @@ def _colors(adata, record: Dict[str, Any], raw: bool) -> List[str]:
             f"adata.uns['spatial_smooth'][{record['name']!r}] exists but adata.obs[{smoothed!r}] "
             "does not -- the object was modified after smoothing. Re-run spatial_smooth.smooth()."
         )
-    if raw and unsmoothed in adata.obs:
-        return [unsmoothed, smoothed]
-    return [smoothed]
+    if not raw:
+        return [smoothed]
+    if unsmoothed not in adata.obs:
+        # Dropping the panel silently would leave the reader comparing nothing. `signature` and
+        # `compare` used to disagree here -- one dropped it, the other raised.
+        warnings.warn(
+            f"raw=True but adata.obs[{unsmoothed!r}] is missing, so only the smoothed panel is "
+            "drawn. It was removed after smoothing; re-run spatial_smooth.smooth() to restore it.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return [smoothed]
+    return [unsmoothed, smoothed]
 
 
 #: scanpy sizes markers as ``120000 / n_obs`` points squared. On a tissue section that leaves
@@ -291,7 +317,7 @@ def compare(
     records = [provenance(adata, n) for n in names]
     color: List[str] = []
     if raw and records:
-        color.append(records[0]["obs_key_raw"])
+        color.extend(c for c in _colors(adata, records[0], raw=True)[:-1])
     for record in records:
         color.extend(c for c in _colors(adata, record, raw=False) if c not in color)
     resolved = _resolve_backend(backend)

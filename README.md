@@ -130,8 +130,10 @@ ss.pl.compare(adata, ["spatial_only", "dm_only", "composed"], raw=True, ncols=4)
 Two conventions are normalised for you, because leaving them to the backend gave different
 pictures of the same tissue. A **spatial basis is always drawn in image convention** — y
 increasing downward, equal aspect — so scanpy and squidpy agree on which way is up. And `size`
-is left alone: it is the marker area in `scanpy` and a *scale factor* in `squidpy`, so a value
-that looks right in one is nearly invisible in the other. Omit it and take the backend's default.
+means different things per backend — marker *area* in `scanpy`, a *scale factor* in `squidpy` — so
+it is documented rather than translated, and the scanpy path gets a density-aware default
+(`plot.default_marker_size`) so a dense section renders as tissue rather than speckle. Pass `size`
+yourself to override.
 
 ---
 
@@ -146,11 +148,11 @@ that looks right in one is nearly invisible in the other. Omit it and take the b
 Bandwidths default to a multiple of the median nearest-neighbour distance, so the same factor
 smooths the same amount whether coordinates are in microns or millimetres.
 
-**Quote `sigma_effective`, not `sigma_used`.** `KnnGaussian` truncates its Gaussian at the `k`-th
+**Quote `sigma_effective`, never `sigma_nominal`.** `KnnGaussian` truncates its Gaussian at the `k`-th
 neighbour, so the bandwidth the data actually sees is set by whichever of `sigma` and the
 `k`-neighbour radius binds first — and since that radius follows a neighbour *count*, the kernel
 is implicitly density-adaptive. `provenance()` records `kernel_mass_retained`, `sigma_effective`
-and its spread across cells alongside the nominal `sigma_used`, and warns when the truncation
+and its spread across cells alongside `sigma_nominal`, and warns when the truncation
 starts to bite. The default `k=400` keeps ~96% of the kernel mass, so the two nearly agree.
 
 > **One caveat.** Over a diffusion map, kompot's native `ls_factor=10` is right. Over *physical*

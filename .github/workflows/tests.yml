@@ -38,6 +38,10 @@ jobs:
         # covers them. Everything else -- composition, persistence, scale invariance, kwargs
         # forwarding, dependency errors -- runs here.
         run: pytest -q -rs
+      - name: Doctests
+        # A doctest that is never executed is a comment that looks like a proof: the API page
+        # advertised `k=100` for months after the default became 400.
+        run: pytest --doctest-modules src/spatial_smooth -q
 
   gp:
     name: pytest with the GP backend

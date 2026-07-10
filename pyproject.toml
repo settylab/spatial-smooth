@@ -73,6 +73,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --tb=short"
+# Doctests run explicitly (`pytest --doctest-modules src/spatial_smooth`) in CI: keeping them
+# out of `testpaths` avoids importing the package twice under two module names.
 python_files = "test_*.py"
 filterwarnings = [
     "ignore::DeprecationWarning",

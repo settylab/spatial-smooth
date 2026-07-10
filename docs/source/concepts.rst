@@ -98,13 +98,14 @@ the bandwidth each step actually resolved to:
    >>> ss.provenance(adata, "sig")["steps"]
    [{'kind': 'knn_gaussian', 'basis': 'spatial', 'k': 400, 'sigma': None,
      'sigma_factor': 6.0, 'workers': -1,
-     'resolved': {'sigma_used': 78.3, 'k_used': 400,
+     'resolved': {'sigma_nominal': 78.3, 'sigma_used': 78.3, 'k_used': 400,
                   'kernel_mass_retained': 0.955,
                   'sigma_effective': 71.6,
                   'sigma_effective_p1': 52.2, 'sigma_effective_p99': 84.1}}]
 
-``sigma_used`` is the nominal Gaussian width; ``sigma_effective`` is what the ``k``-truncated
-kernel actually behaves like. Quote the latter -- see :ref:`truncation` below.
+``sigma_nominal`` is the Gaussian's width *before* truncation -- a bandwidth no cell actually
+experiences. (``sigma_used`` is the same number under its older name.) ``sigma_effective`` is what
+the ``k``-truncated kernel behaves like. **Quote the latter** -- see :ref:`truncation` below.
 
 
 Scoring, and why gene-level smoothing is free
@@ -186,9 +187,9 @@ so the operator is row-stochastic by construction. Let :math:`r_k(i)` be the dis
 ``k``-th neighbour. Two diagnostics follow, both recorded by
 :func:`~spatial_smooth.core.provenance`.
 
-**Retained kernel mass.** For an isotropic 2-D Gaussian the mass inside radius :math:`r` is
-:math:`1 - e^{-r^{2}/2\sigma^{2}}`, so the fraction of the *untruncated* kernel that survives the
-``k``-neighbour cutoff is
+**Retained kernel mass.** For a *continuous* isotropic 2-D Gaussian the mass inside radius
+:math:`r` is :math:`1 - e^{-r^{2}/2\sigma^{2}}`, so an estimate of the fraction of the untruncated
+kernel that survives the ``k``-neighbour cutoff is
 
 .. math::
 
@@ -200,6 +201,13 @@ Inverting that on the *realised* weights gives the bandwidth the truncated kerne
 .. math::
 
    \sigma_{\mathrm{eff}}(i) = \sqrt{\tfrac{1}{2} \sum_{j \in \mathcal{N}_k(i)} w_{ij}\, d_{ij}^{2}} .
+
+This :math:`m` is an **estimate, not an exact accounting**: it equals the discrete retained weight
+fraction :math:`\sum_{j \in \mathcal{N}_k(i)} \tilde{w}_{ij} \big/ \sum_{j} \tilde{w}_{ij}`
+(unnormalised :math:`\tilde{w}`) only where the local point density is uniform. Measured against
+the discrete truth on a real section it is biased low by 0.006 at ``k=400`` and 0.022 at
+``k=100`` -- i.e. it *under*-reports retention, so the warning below fires slightly early rather
+than slightly late.
 
 Because :math:`r_k(i)` is fixed by a neighbour *count*, it contracts where cells are dense and
 expands where they are sparse: :math:`\sigma_{\mathrm{eff}}` varies from cell to cell, and the
@@ -229,7 +237,7 @@ nearest-neighbour distance 13.05 µm, hence nominal :math:`\sigma = 6 \times 13.
      - 52.2 → 84.1 µm
 
 At ``k = 100`` the nominal :math:`\sigma` overstates the realised bandwidth by roughly 40%, which
-is why the default is ``k = 400``. **Quote** ``sigma_effective``, **not** ``sigma_used``.
+is why the default is ``k = 400``. **Quote** ``sigma_effective``, **never** ``sigma_nominal``.
 
 Implementation: :func:`spatial_smooth.smoothers.knn_gaussian_operator` (``return_info=True``).
 

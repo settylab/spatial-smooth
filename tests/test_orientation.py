@@ -122,3 +122,21 @@ def test_show_true_still_renders_and_returns_none(tissue):
     out = ss.pl.signature(tissue, "sig", raw=False, backend="scanpy")
     assert out is None
     plt.close("all")
+
+
+def test_a_spatial_result_refuses_to_be_drawn_on_a_umap(tissue):
+    """R7: dropping the coordinates must not silently move the field onto another embedding."""
+    del tissue.obsm["spatial"]
+    with pytest.raises(KeyError, match="no longer present"):
+        ss.pl.signature(tissue, "sig", backend="scanpy", show=False)
+
+
+def test_missing_raw_panel_warns_in_both_entry_points(tissue):
+    """R7: `signature` dropped the panel silently while `compare` raised. They must agree."""
+    del tissue.obs["sig_raw"]
+    with pytest.warns(UserWarning, match="only the smoothed panel"):
+        ss.pl.signature(tissue, "sig", raw=True, backend="scanpy", show=False)
+    plt.close("all")
+    with pytest.warns(UserWarning, match="only the smoothed panel"):
+        ss.pl.compare(tissue, ["sig"], raw=True, backend="scanpy", show=False)
+    plt.close("all")

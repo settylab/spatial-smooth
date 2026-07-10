@@ -34,6 +34,28 @@ __all__ = [
 ]
 
 
+def _require_finite(matrix, what: str) -> None:
+    """Reject NaN/inf before it can be mistaken for something else.
+
+    A NaN column is not a constant column, and it is not a smoothable one either. Without this
+    check ``np.ptp(values)`` is ``nan``, ``not (nan > 0)`` is ``True``, and a gene carrying a
+    single missing value would silently take the constant-column branch and come back unsmoothed.
+    A loud failure beats a wrong answer that looks like a right one. Both row-stochastic kernels
+    validate identically, so they cannot disagree on the same input.
+    """
+    np = require("numpy")
+    matrix = np.asarray(matrix)
+    if not np.all(np.isfinite(matrix)):
+        bad = np.argwhere(~np.isfinite(matrix))
+        first = tuple(int(i) for i in bad[0])
+        raise ValueError(
+            f"{what} requires finite values; found {len(bad)} non-finite entr"
+            f"{'y' if len(bad) == 1 else 'ies'} (first at index {first}). "
+            "Drop or impute them before smoothing -- a missing value is neither a constant nor a "
+            "measurement, and silently passing it through would corrupt the field."
+        )
+
+
 def median_nn_distance(coords, *, workers: int = -1) -> float:
     """Median distance from each point to its nearest *other* point.
 
@@ -100,7 +122,9 @@ def knn_gaussian_operator(
         The *nominal* bandwidth: the ``sigma`` of the Gaussian before truncation.
     info : dict, only if ``return_info``
         ``kernel_mass_retained`` -- the mean fraction of the untruncated 2-D Gaussian's mass
-        that falls inside each point's ``k``-neighbour radius; ``sigma_effective`` -- the mean
+        that falls inside each point's ``k``-neighbour radius. This assumes locally uniform point
+        density, so it is an estimate of the discrete retained-weight fraction rather than an exact
+        accounting; it is biased slightly low (conservative). ``sigma_effective`` -- the mean
         bandwidth actually applied, recovered from the weighted second moment
         (``sqrt(E_w[d**2] / 2)``); and its 1st/99th percentiles across points.
 
@@ -126,6 +150,7 @@ def knn_gaussian_operator(
     sparse = scipy.sparse
 
     coords = np.asarray(coords, dtype=np.float64)
+    _require_finite(coords, "knn_gaussian_operator coordinates")
     n = coords.shape[0]
     k = int(min(k, n))
     if k < 1:
@@ -194,12 +219,13 @@ def smooth_matrix_knn_gaussian(
         The ``(n, g)`` smoothed matrix and the bandwidth used.
     """
     np = require("numpy")
-    W, sigma_used = knn_gaussian_operator(
-        coords, k=k, sigma=sigma, sigma_factor=sigma_factor, workers=workers
-    )
     matrix = np.asarray(matrix, dtype=np.float64)
     if matrix.ndim == 1:
         matrix = matrix[:, None]
+    _require_finite(matrix, "smooth_matrix_knn_gaussian")
+    W, sigma_used = knn_gaussian_operator(
+        coords, k=k, sigma=sigma, sigma_factor=sigma_factor, workers=workers
+    )
     return np.asarray(W @ matrix), sigma_used
 
 
@@ -283,6 +309,8 @@ def smooth_matrix_kde(
     matrix = np.asarray(matrix, dtype=np.float64)
     if matrix.ndim == 1:
         matrix = matrix[:, None]
+    _require_finite(coords, "smooth_matrix_kde coordinates")
+    _require_finite(matrix, "smooth_matrix_kde")
 
     spacing = median_nn_distance(coords, workers=workers)
     if bw is None:
@@ -311,9 +339,10 @@ def smooth_matrix_kde(
     out = np.empty_like(matrix)
     for j in range(matrix.shape[1]):
         values = matrix[:, j]
-        if not np.ptp(values) > 0:
-            # Constant column: the identity for a row-stochastic smoother, and the only input
-            # for which KDEpy's weight normalisation divides by zero. See the Notes above.
+        if np.ptp(values) == 0:
+            # Constant column: the identity for a row-stochastic smoother, and the only finite
+            # input for which KDEpy's weight normalisation divides by zero. See the Notes above.
+            # `== 0` rather than `not > 0`: the latter also captures NaN, which is not constant.
             out[:, j] = values
             continue
         shift = float(values.min())
