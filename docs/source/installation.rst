@@ -3,13 +3,14 @@ Installation
 
 .. code-block:: bash
 
-   pip install "spatial-smooth[all] @ git+https://github.com/settylab/spatial-smooth"
+   pip install "spatial-smooth[all]"
 
 .. note::
 
-   The PyPI release is **pending**. Install from the repository for now -- you will need access to
-   it. The bracketed extras work exactly the same through a direct reference. Once the package is
-   published this becomes ``pip install "spatial-smooth[all]"``.
+   ``[all]`` pulls every optional backend. For a minimal install, drop the extra
+   (``pip install spatial-smooth``) and add only the extras you need (see below). To install the
+   development version straight from the repository:
+   ``pip install "spatial-smooth[all] @ git+https://github.com/settylab/spatial-smooth"``.
 
 Only ``numpy``, ``scipy``, ``pandas`` and ``anndata`` are hard requirements. Everything else is
 an extra, imported lazily, and reported with the exact ``pip install`` line when missing.
