@@ -42,11 +42,12 @@ fields and the cortical layers resolve. 0.9 seconds.*
 ## Install
 
 ```bash
-pip install "spatial-smooth[all] @ git+https://github.com/settylab/spatial-smooth"
+pip install "spatial-smooth[all]"
 ```
 
-The PyPI release is pending, so install from the repository for now; you will need access to it.
-Once the package is published, this becomes `pip install "spatial-smooth[all]"`.
+`[all]` pulls every optional backend. For a minimal install, drop the extra (`pip install
+spatial-smooth`) and add only the extras you need (see below). `uv pip install "spatial-smooth[all]"`
+works identically.
 
 Only `numpy`, `scipy`, `pandas` and `anndata` are required. Everything else is an optional extra,
 imported lazily and reported with the exact `pip install` line when missing: `dm` (`kompot`),

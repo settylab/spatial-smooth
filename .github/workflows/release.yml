@@ -1,0 +1,54 @@
+name: release
+
+# Publishes to PyPI when a GitHub release is published. Uses PyPI Trusted
+# Publishing (OIDC) -- no API token is stored in the repository. Registering the
+# trusted publisher on pypi.org (project `spatial-smooth`, this repo, this
+# workflow filename, environment `pypi`) is a one-time step done by a project
+# owner before the first automated run can authenticate.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Check
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/spatial-smooth
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A version already on PyPI (e.g. one published manually) is skipped
+          # rather than failing the run.
+          skip-existing: true
