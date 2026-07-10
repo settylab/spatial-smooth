@@ -264,13 +264,15 @@ def test_provenance_offers_the_honest_name_for_the_nominal_bandwidth(adata, sign
 
 
 # ----------------------------- F2: every step validates, not just the ones I remembered to guard
-@pytest.mark.parametrize("steps", ["spatial", "spatial-kde", "dm"])
+@pytest.mark.parametrize(
+    "steps", ["spatial", "spatial-kde", "dm", "spatial-gp", "dm+spatial"]
+)
 def test_no_step_silently_accepts_a_nan_gene(adata, signature, steps):
     """`KnnGaussian` and `Kde` guarded themselves; `KompotGP` did not, so `steps="dm"` returned an
     all-NaN score for every cell in silence. Validation now lives at the single choke point."""
     if steps == "spatial-kde":
         pytest.importorskip("KDEpy")
-    if steps == "dm":
+    if "dm" in steps or steps == "spatial-gp":
         pytest.importorskip("kompot")
     adata.X = np.asarray(adata.X, dtype=np.float64)
     adata.X[3, 0] = np.nan

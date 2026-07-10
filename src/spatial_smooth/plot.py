@@ -52,6 +52,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ._deps import have, require
 from .core import provenance
+from .smoothers import SpatialSmoothWarning
 from .steps import SPATIAL_KEY
 
 __all__ = ["signature", "compare", "available_backends", "default_marker_size", "BACKENDS"]
@@ -144,7 +145,7 @@ def _colors(adata, record: Dict[str, Any], raw: bool) -> List[str]:
         warnings.warn(
             f"raw=True but adata.obs[{unsmoothed!r}] is missing, so only the smoothed panel is "
             "drawn. It was removed after smoothing; re-run spatial_smooth.smooth() to restore it.",
-            UserWarning,
+            SpatialSmoothWarning,
             stacklevel=3,
         )
         return [smoothed]

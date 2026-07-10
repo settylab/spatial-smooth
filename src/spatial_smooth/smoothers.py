@@ -25,6 +25,22 @@ from typing import Optional, Tuple
 
 from ._deps import require
 
+class SpatialSmoothWarning(UserWarning):
+    """Base class for warnings this package raises about its own behaviour.
+
+    A distinct category, not a bare ``UserWarning``, because downstream tooling must be able to
+    recognise our warnings by **identity** rather than by the file CPython happens to attribute
+    them to. ``warnings.warn(..., stacklevel=2)`` puts the *caller's* filename in the header, so a
+    path-based filter drops the warning whenever it is raised from user code -- which is exactly
+    the reader who needs it. Subclasses ``UserWarning``, so ``pytest.warns(UserWarning)`` and
+    ``-W error::UserWarning`` keep working.
+    """
+
+
+class TruncationWarning(SpatialSmoothWarning):
+    """The ``k``-neighbour cutoff discards enough kernel mass to change the bandwidth."""
+
+
 #: Warn when the ``k``-neighbour truncation discards more than this fraction of the kernel.
 #: Lives here, not in `steps`, so every public entry point inherits the warning -- the low-level
 #: functions are exported too, and a user calling `smooth_field_knn_gaussian` deserves the same
@@ -32,6 +48,8 @@ from ._deps import require
 MIN_KERNEL_MASS = 0.9
 
 __all__ = [
+    "SpatialSmoothWarning",
+    "TruncationWarning",
     "median_nn_distance",
     "knn_gaussian_operator",
     "smooth_matrix_knn_gaussian",
@@ -205,7 +223,7 @@ def knn_gaussian_operator(
             f"point's {k}-neighbour radius, so the effective bandwidth is "
             f"{info['sigma_effective']:.3g} (nominal sigma {sigma:.3g}) and varies with local "
             "density. Raise k, or quote the effective bandwidth, not the nominal one.",
-            UserWarning,
+            TruncationWarning,
             stacklevel=2,
         )
 

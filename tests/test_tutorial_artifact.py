@@ -32,13 +32,19 @@ def _executed(notebook) -> bool:
     )
 
 
-def _stream_text(notebook) -> str:
+def _stream_text(notebook, name: str) -> str:
+    """Concatenate one stream by **name**.
+
+    G1: this used to merge stdout and stderr. That is precisely why the decapitated-warning bug
+    survived a round: a stdout `print` of the message satisfied the assertion while the stderr
+    stream had been gutted. A detector that cannot distinguish the two cannot catch it.
+    """
     return "\n".join(
         "".join(out.get("text", []))
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
         for out in cell.get("outputs", [])
-        if out.get("output_type") == "stream"
+        if out.get("output_type") == "stream" and out.get("name") == name
     )
 
 
@@ -55,18 +61,45 @@ def test_tutorial_is_executed_with_figures(notebook):
     assert '"output_type": "error"' not in source, "the tutorial contains an error output"
 
 
-def test_tutorial_surfaces_the_truncation_warning(notebook):
-    """R1: the level-three pipeline uses k=64 and must show, not hide, the warning that fires."""
+WARNING_HEADER = re.compile(
+    r"^[\w./-]+\.py:\d+: \w*Warning: .*truncates the kernel", re.MULTILINE
+)
+ORPHAN_ECHO = re.compile(r"^\s+\S")
+
+
+def test_tutorial_surfaces_the_truncation_warning_on_stderr(notebook):
+    """R1/G1: the level-three pipeline trips the warning; a real warning header must survive.
+
+    Asserted against **stderr**, and against a header, not a bare substring. The previous version
+    passed on a notebook whose stderr had been decapitated, because a stdout copy carried the text.
+    """
     if not _executed(notebook):
         pytest.skip("tutorial has not been executed in this checkout")
-    text = _stream_text(notebook)
-    assert "truncates the kernel" in text, (
-        "the tutorial's own pipeline trips the truncation warning; the notebook must display it "
-        "rather than scrub it away"
+    stderr = _stream_text(notebook, "stderr")
+    assert WARNING_HEADER.search(stderr), (
+        "the published notebook must carry a genuine warning header on stderr "
+        f"(got: {stderr[:200]!r})"
     )
-    assert "sigma_effective" in NOTEBOOK.read_text(), (
-        "the notebook must tell the reader which bandwidth to quote"
-    )
+
+
+def test_tutorial_has_no_orphaned_warning_fragments(notebook):
+    """G1: an indented source echo with no header above it is a decapitated warning."""
+    if not _executed(notebook):
+        pytest.skip("tutorial has not been executed in this checkout")
+    stderr = _stream_text(notebook, "stderr")
+    header_seen = False
+    for line in stderr.splitlines():
+        if re.match(r"^[\w./-]+\.py:\d+: \w*Warning: ", line):
+            header_seen = True
+            continue
+        if ORPHAN_ECHO.match(line):
+            assert header_seen, f"orphaned warning fragment with no header: {line!r}"
+        elif line.strip():
+            header_seen = False
+
+
+def test_tutorial_tells_the_reader_which_bandwidth_to_quote(notebook):
+    assert "sigma_effective" in NOTEBOOK.read_text()
 
 
 def test_tutorial_does_not_subsample_or_use_time_magics(notebook):

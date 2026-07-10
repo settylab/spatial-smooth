@@ -58,6 +58,8 @@ from .core import (
     smooth,
 )
 from .smoothers import (
+    SpatialSmoothWarning,
+    TruncationWarning,
     knn_gaussian_operator,
     median_nn_distance,
     smooth_field_kde,
@@ -97,6 +99,9 @@ __all__ = [
     "provenance",
     "list_results",
     "UNS_KEY",
+    # warnings
+    "SpatialSmoothWarning",
+    "TruncationWarning",
     # kernels
     "knn_gaussian_operator",
     "median_nn_distance",
