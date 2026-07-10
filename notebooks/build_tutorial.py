@@ -373,15 +373,9 @@ pipeline'''
 
 code(
     '''\
-import warnings
-
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
-
-for w in caught:
-    print(f"{w.category.__name__}: {w.message}")
-    print()
+# k=64 truncates the Gaussian. The package says so, on stderr, and the notebook keeps that
+# message: it is the disclosure this section exists to teach.
+ss.smooth(adata, HIPPOCAMPUS, "custom", steps=pipeline, store_genes=True)
 
 print("smoothed score      :", adata.obs["custom"].shape)
 print("smoothed expression :", adata.obsm["custom_smoothed"].shape)   # store_genes=True'''

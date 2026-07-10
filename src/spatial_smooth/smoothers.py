@@ -20,9 +20,16 @@ smoothing whether coordinates are in microns, millimetres, or arbitrary embeddin
 """
 from __future__ import annotations
 
+import warnings
 from typing import Optional, Tuple
 
 from ._deps import require
+
+#: Warn when the ``k``-neighbour truncation discards more than this fraction of the kernel.
+#: Lives here, not in `steps`, so every public entry point inherits the warning -- the low-level
+#: functions are exported too, and a user calling `smooth_field_knn_gaussian` deserves the same
+#: disclosure as one calling `smooth(steps=[KnnGaussian(...)])`.
+MIN_KERNEL_MASS = 0.9
 
 __all__ = [
     "median_nn_distance",
@@ -40,8 +47,12 @@ def _require_finite(matrix, what: str) -> None:
     A NaN column is not a constant column, and it is not a smoothable one either. Without this
     check ``np.ptp(values)`` is ``nan``, ``not (nan > 0)`` is ``True``, and a gene carrying a
     single missing value would silently take the constant-column branch and come back unsmoothed.
-    A loud failure beats a wrong answer that looks like a right one. Both row-stochastic kernels
-    validate identically, so they cannot disagree on the same input.
+    A loud failure beats a wrong answer that looks like a right one.
+
+    Every step validates through this one function, and :func:`spatial_smooth.core.smooth`
+    validates the expression matrix before any step runs. An earlier version guarded only the two
+    row-stochastic kernels, and ``steps="dm"`` -- which goes through the Gaussian process -- still
+    returned an all-NaN score for every cell in silence.
     """
     np = require("numpy")
     matrix = np.asarray(matrix)
@@ -175,9 +186,6 @@ def knn_gaussian_operator(
 
     rows = np.repeat(np.arange(n), k)
     W = sparse.csr_matrix((w.ravel(), (rows, idx.ravel())), shape=(n, n))
-    if not return_info:
-        return W, sigma
-
     # Mass of an untruncated 2-D Gaussian inside the k-th neighbour radius, and the bandwidth
     # the truncated kernel actually behaves like (E_w[d^2] = 2 * sigma^2 for a 2-D Gaussian).
     r_k = dist[:, -1]
@@ -189,6 +197,20 @@ def knn_gaussian_operator(
         "sigma_effective_p1": float(np.percentile(sigma_eff, 1)),
         "sigma_effective_p99": float(np.percentile(sigma_eff, 99)),
     }
+
+    if info["kernel_mass_retained"] < MIN_KERNEL_MASS:
+        warnings.warn(
+            f"KnnGaussian(k={k}) truncates the kernel: only "
+            f"{info['kernel_mass_retained']:.0%} of the Gaussian mass falls within each "
+            f"point's {k}-neighbour radius, so the effective bandwidth is "
+            f"{info['sigma_effective']:.3g} (nominal sigma {sigma:.3g}) and varies with local "
+            "density. Raise k, or quote the effective bandwidth, not the nominal one.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if not return_info:
+        return W, sigma
     return W, sigma, info
 
 

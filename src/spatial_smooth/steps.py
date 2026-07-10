@@ -123,8 +123,9 @@ class Step:
         return np.asarray(adata.obsm[self.basis], dtype=np.float64)
 
 
-#: Warn when the ``k``-neighbour truncation discards more than this fraction of the kernel.
-MIN_KERNEL_MASS = 0.9
+#: Re-exported from :mod:`spatial_smooth.smoothers`, which owns the warning so that every public
+#: entry point -- not just this step -- discloses a truncated kernel.
+from .smoothers import MIN_KERNEL_MASS  # noqa: E402  (kept importable from `steps`)
 
 
 @dataclass(frozen=True)
@@ -198,16 +199,8 @@ class KnnGaussian(Step):
         matrix = np.asarray(matrix, dtype=np.float64)
         out = np.asarray(W @ matrix)
 
-        if info["kernel_mass_retained"] < MIN_KERNEL_MASS:
-            warnings.warn(
-                f"KnnGaussian(k={self.k}) truncates the kernel: only "
-                f"{info['kernel_mass_retained']:.0%} of the Gaussian mass falls within each "
-                f"cell's {self.k}-neighbour radius, so the effective bandwidth is "
-                f"{info['sigma_effective']:.3g} (nominal sigma {sigma_used:.3g}) and varies with "
-                f"local density. Raise k, or quote provenance()'s 'sigma_effective'.",
-                UserWarning,
-                stacklevel=3,
-            )
+        # The truncation UserWarning is raised by `knn_gaussian_operator` itself, so the
+        # low-level exports warn too. Do not duplicate it here.
 
         # `sigma_nominal` is the honest name: it is the Gaussian's sigma *before* truncation, a
         # bandwidth no cell actually experiences. `sigma_used` is retained as an alias because it
@@ -326,6 +319,10 @@ class KompotGP(Step):
         np = require("numpy")
         pd = require("pandas")
         anndata = require("anndata")
+        from .smoothers import _require_finite
+
+        _require_finite(matrix, f"{type(self).__name__}")
+        _require_finite(self._coords(adata), f"{type(self).__name__} coordinates")
         kompot = require("kompot")
         if not hasattr(kompot, "smooth_expression"):
             raise ImportError(

@@ -11,6 +11,8 @@ Two of these exist because a skeptic found the prose and the behaviour disagreed
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -189,7 +191,8 @@ def test_smooth_rejects_a_gene_with_a_missing_value(adata, signature, steps):
         pytest.importorskip("KDEpy")
     adata.X = np.asarray(adata.X, dtype=np.float64)
     adata.X[3, 0] = np.nan
-    with pytest.raises(ValueError, match="requires finite values"):
+    # `core.smooth` validates first and names the gene; the kernels validate again beneath it.
+    with pytest.raises(ValueError, match="non-finite"):
         ss.smooth(adata, signature, "sig", steps=steps)
 
 
@@ -258,3 +261,53 @@ def test_provenance_offers_the_honest_name_for_the_nominal_bandwidth(adata, sign
     resolved = ss.provenance(adata, "sig")["steps"][0]["resolved"]
     assert resolved["sigma_nominal"] == resolved["sigma_used"]
     assert resolved["sigma_effective"] <= resolved["sigma_nominal"] * 1.05
+
+
+# ----------------------------- F2: every step validates, not just the ones I remembered to guard
+@pytest.mark.parametrize("steps", ["spatial", "spatial-kde", "dm"])
+def test_no_step_silently_accepts_a_nan_gene(adata, signature, steps):
+    """`KnnGaussian` and `Kde` guarded themselves; `KompotGP` did not, so `steps="dm"` returned an
+    all-NaN score for every cell in silence. Validation now lives at the single choke point."""
+    if steps == "spatial-kde":
+        pytest.importorskip("KDEpy")
+    if steps == "dm":
+        pytest.importorskip("kompot")
+    adata.X = np.asarray(adata.X, dtype=np.float64)
+    adata.X[3, 0] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        ss.smooth(adata, signature, "sig", steps=steps, auto_embed=False)
+
+
+def test_the_error_names_the_offending_gene(adata, signature):
+    adata.X = np.asarray(adata.X, dtype=np.float64)
+    adata.X[3, 1] = np.nan
+    with pytest.raises(ValueError, match=re.escape(repr(signature[1]))):
+        ss.smooth(adata, signature, "sig", steps="spatial")
+
+
+# ------------------------- F4: the truncation warning belongs to the kernel, not to one wrapper
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: ss.knn_gaussian_operator(c, k=8),
+        lambda c: ss.smooth_field_knn_gaussian(c, np.linspace(0, 1, len(c)), k=8),
+        lambda c: ss.smooth_matrix_knn_gaussian(c, np.linspace(0, 1, len(c)), k=8),
+    ],
+    ids=["operator", "smooth_field", "smooth_matrix"],
+)
+def test_low_level_entry_points_warn_on_truncation(call):
+    """These are public exports. A user calling them deserves the same disclosure as `smooth()`."""
+    rng = np.random.default_rng(0)
+    coords = rng.random((1200, 2)) * 100.0
+    with pytest.warns(UserWarning, match="truncates the kernel"):
+        call(coords)
+
+
+def test_low_level_entry_points_are_quiet_when_truncation_is_mild():
+    rng = np.random.default_rng(0)
+    coords = rng.random((800, 2)) * 100.0
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("error", UserWarning)
+        ss.knn_gaussian_operator(coords, k=800)

@@ -139,6 +139,28 @@ def select_cells(
     return mask
 
 
+def _require_finite_genes(matrix, genes: Sequence[str]) -> None:
+    """Reject NaN/inf in the expression matrix, naming the gene that carries it.
+
+    Validated here, at the single point every pipeline passes through, rather than inside each
+    step: `KnnGaussian` and `Kde` guarded themselves while `KompotGP` did not, so `steps="dm"`
+    returned an all-NaN score for every cell with no exception and no warning. A step-local
+    invariant is only as good as the steps that implement it.
+    """
+    np = require("numpy")
+    bad = ~np.isfinite(matrix)
+    if not bad.any():
+        return
+    columns = np.flatnonzero(bad.any(axis=0))
+    named = ", ".join(f"{genes[j]!r} ({int(bad[:, j].sum())} cells)" for j in columns[:5])
+    more = " ..." if columns.size > 5 else ""
+    raise ValueError(
+        f"expression contains non-finite values in {columns.size} gene(s): {named}{more}. "
+        "Drop or impute them before smoothing -- a missing value is neither a constant nor a "
+        "measurement, and smoothing would spread it across the tissue."
+    )
+
+
 def _gene_matrix(adata, genes: Sequence[str], layer: Optional[str]):
     """Dense ``(n_obs, n_genes)`` float64 matrix for ``genes`` out of ``layer`` (or ``.X``)."""
     np = require("numpy")
@@ -295,6 +317,7 @@ def smooth(
             )
 
     raw_matrix = _gene_matrix(adata, genes, layer)
+    _require_finite_genes(raw_matrix, genes)
     stats = _raw_stats(raw_matrix)
 
     matrix = raw_matrix
