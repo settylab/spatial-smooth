@@ -67,8 +67,10 @@ md(
 ## Setup
 
 ```bash
-pip install "spatial-smooth[all]"
-```"""
+pip install "spatial-smooth[all] @ git+https://github.com/settylab/spatial-smooth"
+```
+
+*(The PyPI release is pending; install from the repository for now.)*"""
 )
 
 code(
