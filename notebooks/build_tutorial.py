@@ -51,6 +51,7 @@ The scientific choice is *which* neighbours count:
 | **spatial** | physically adjacent cells | tissue architecture: niches, layers, gradients |
 | **cell state** | transcriptionally similar cells | biology, independent of position |
 | **both, composed** | first the manifold, then the tissue | denoised expression laid out in space |
+| **both, blended** | space and cell state, independently | a symmetric mean of the two views, on the raw score's scale |
 
 This notebook walks three levels of control:
 
@@ -237,11 +238,13 @@ md(
 |---|---|---|
 | `"spatial"` (default) | `[KnnGaussian()]` | spatial only |
 | `"dm"` | `[KompotGP()]` | cell state only |
-| `"dm+spatial"` | `[KompotGP(), KnnGaussian()]` | both, cell state first |
+| `"dm+spatial"` | `[KompotGP(), KnnGaussian()]` | both, cell state first (composed) |
+| `"blend"` | `Blend("spatial", "dm")` | both, independent + symmetric (§3b) |
 
 Doing *just one of the two* is the ordinary case, not a special one — a one-element pipeline.
 Composing runs the steps left to right: the spatial step smooths the expression the
-cell-state step already denoised.
+cell-state step already denoised. Blending (`"blend"`, covered in 3b) instead keeps the two views
+independent.
 
 The cell-state step is a Gaussian-process regression over a diffusion map of the expression
 manifold (`kompot.smooth_expression`, built on `mellon`). It needs `obsm["DM_EigenVectors"]`;
@@ -286,9 +289,67 @@ the cleanest tissue field. Cell-state smoothing denoises without using position 
 does both, and is the smoothest of the three."""
 )
 
+# --------------------------------------------------------------------------------------- #
 md(
     """\
-### 3b. Plot control: kwargs go straight through
+### 3b. Blending: a symmetric alternative to composition
+
+Composition (`"dm+spatial"`) is **not symmetric**: the spatial step smooths whatever the
+cell-state step handed it, so the result inherits the spatial footprint and leans toward that
+parent. `steps="blend"` takes the other route — it smooths the raw expression **independently**
+over space and over cell state, then returns a *symmetric mean* of the two, staying roughly
+equidistant from both rather than collapsing onto either.
+
+The two views sit on different scales (spatial smoothing suppresses more variance than the GP), so
+a blend standardises each score before averaging. That average lives in **z-units**, which would
+not share a colour bar with the other modes — so the final, load-bearing step **range-calibrates**
+it back onto the raw score's scale: it matches the raw score's mean and standard deviation
+(`calibrate="std"`, the default), or the median and inter-quartile range
+(`ss.Blend(calibrate="iqr")`, robust to outlier cells). The calibration is a single affine,
+monotone map, so it never reorders cells — it only places the numbers where they belong."""
+)
+
+code(
+    '''\
+# both, blended: independent spatial + cell-state views, symmetric, range-calibrated
+ss.smooth(adata, HIPPOCAMPUS, "blended", steps="blend")
+
+# the point of the calibration, in one table: the blended field lands on the raw score's
+# scale (mean/std matched), not in z-units -- so it shares a colour bar with the rest.
+cols = ["hippocampus_raw", "spatial_only", "composed", "blended"]
+adata.obs[cols].describe().loc[["mean", "std", "min", "max"]].T'''
+)
+
+code(
+    '''\
+ss.pl.compare(
+    adata, ["spatial_only", "dm_only", "composed", "blended"], raw=True,
+    backend="scanpy", ncols=5, frameon=False,
+)'''
+)
+
+md(
+    """\
+The blended panel carries cell-state structure and spatial coherence at once without collapsing
+onto either parent, and — because it was calibrated — its numbers sit on the same scale as the raw
+score beside it. The provenance records both branches and the affine calibration that was
+applied:"""
+)
+
+code(
+    '''\
+blend_step = ss.provenance(adata, "blended")["steps"][0]
+print("left      :", [s["kind"] for s in blend_step["left"]])
+print("right     :", [s["kind"] for s in blend_step["right"]])
+print("calibrate :", blend_step["calibrate"])
+r = blend_step["resolved"]
+print(f"blend std {r['blend_std']:.3f} vs raw std {r['raw_std']:.3f}  "
+      f"(rescaled x{r['scale']:.3f} from the z-unit average)")'''
+)
+
+md(
+    """\
+### 3c. Plot control: kwargs go straight through
 
 `ss.pl.signature` is a wrapper, not a reimplementation. Everything after `name` is forwarded
 **verbatim** to the backend:
@@ -322,7 +383,7 @@ ss.pl.signature(adata, "hippocampus", backend="squidpy", cmap="magma", figsize=(
 
 md(
     """\
-### 3c. Bandwidth is scale-invariant
+### 3d. Bandwidth is scale-invariant
 
 Every default bandwidth is a multiple of the median nearest-neighbour distance, so the same
 factor smooths the same amount whether coordinates are microns or millimetres. Rescale the

@@ -24,14 +24,18 @@ neighbours count is the scientific choice this package makes explicit.
 * **Cell-state smoothing** -- neighbours are transcriptional neighbours (a diffusion map of the
   expression manifold). Denoises along biology, ignoring where a cell sits.
 * **Both, composed** -- denoise along the manifold first, then smooth the result over the tissue.
+* **Both, blended** -- smooth the raw expression *independently* over space and over cell state,
+  then take a symmetric, range-calibrated mean of the two scores. Unlike the composition (which
+  collapses toward its spatial parent), the blend stays distinct from both views.
 
-The three are one argument apart::
+The four are one argument apart::
 
     import spatial_smooth as ss
 
     ss.smooth(adata, genes, "sig")                        # spatial only  (the default)
     ss.smooth(adata, genes, "sig", steps="dm")            # cell state only
     ss.smooth(adata, genes, "sig", steps="dm+spatial")    # both, in that order
+    ss.smooth(adata, genes, "sig", steps="blend")         # both, symmetrically blended
     ss.pl.signature(adata, "sig")                         # raw vs smoothed, on tissue
 
 Results live in the ``AnnData`` (``obs``, ``obsm``, ``uns``), so ``adata.write_h5ad(...)`` and a
@@ -71,10 +75,12 @@ from .steps import (
     DM_KEY,
     SHORTHANDS,
     SPATIAL_KEY,
+    Blend,
     Kde,
     KnnGaussian,
     KompotGP,
     Step,
+    as_blend,
     resolve_steps,
 )
 from . import plot
@@ -91,7 +97,9 @@ __all__ = [
     "KnnGaussian",
     "Kde",
     "KompotGP",
+    "Blend",
     "resolve_steps",
+    "as_blend",
     "SHORTHANDS",
     "DM_KEY",
     "SPATIAL_KEY",
