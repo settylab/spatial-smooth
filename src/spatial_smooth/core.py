@@ -36,7 +36,7 @@ import warnings
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from ._deps import require
-from .steps import DM_KEY, Step, StepSpec, resolve_steps
+from .steps import DM_KEY, Step, StepSpec, as_blend, resolve_steps
 
 __all__ = [
     "smooth",
@@ -197,6 +197,94 @@ def _raw_stats(matrix):
     return mu, sd
 
 
+def _run_pipeline(pipeline, raw_matrix, adata, genes, progress):
+    """Apply a linear pipeline to ``raw_matrix``, returning the smoothed matrix and step records.
+
+    Factored out of :func:`smooth` so that a :class:`~spatial_smooth.steps.Blend` can run two
+    independent branches through the identical machinery. Each step consumes the previous step's
+    output; the shape is asserted to be preserved so a misbehaving step fails loudly.
+    """
+    np = require("numpy")
+    matrix = raw_matrix
+    step_records: List[Dict[str, Any]] = []
+    for step in pipeline:
+        matrix, resolved = step.apply(matrix, adata, genes, progress=progress)
+        matrix = np.asarray(matrix, dtype=np.float64)
+        if matrix.shape != raw_matrix.shape:  # pragma: no cover - defensive
+            raise RuntimeError(
+                f"step {type(step).__name__} changed the matrix shape "
+                f"{raw_matrix.shape} -> {matrix.shape}"
+            )
+        record = step.to_dict()
+        record["resolved"] = resolved
+        step_records.append(record)
+    return matrix, step_records
+
+
+def _standardize(x):
+    """Zero-mean, unit-variance version of a 1-D score, guarding a constant field."""
+    np = require("numpy")
+    sd = float(x.std())
+    sd = 1.0 if sd == 0 else sd
+    return (x - x.mean()) / sd
+
+
+def _affine_to_match(values, target, *, method: str):
+    """Return ``(a, b)`` so ``a * values + b`` matches ``target``'s centre and spread.
+
+    ``method="std"`` matches the mean and standard deviation (the first two moments exactly);
+    ``method="iqr"`` matches the median and inter-quartile range (robust to outlier cells). The
+    map is affine and, because both scales are non-negative, monotone -- it never reorders cells.
+    """
+    np = require("numpy")
+    if method == "std":
+        src_center, src_scale = float(values.mean()), float(values.std())
+        tgt_center, tgt_scale = float(target.mean()), float(target.std())
+    elif method == "iqr":
+        src_center = float(np.median(values))
+        sq1, sq3 = np.percentile(values, [25, 75])
+        src_scale = float(sq3 - sq1)
+        tgt_center = float(np.median(target))
+        tq1, tq3 = np.percentile(target, [25, 75])
+        tgt_scale = float(tq3 - tq1)
+    else:  # pragma: no cover - guarded by the caller
+        raise ValueError(f"unknown calibrate method {method!r}")
+    src_scale = 1.0 if src_scale == 0 else src_scale
+    a = tgt_scale / src_scale
+    b = tgt_center - a * src_center
+    return a, b
+
+
+def _blend_field(left_score, right_score, raw_score, *, calibrate: str):
+    """Symmetric mean of two standardized scores, affinely calibrated to ``raw_score``'s scale.
+
+    Returns ``(blended_score, resolved)`` where ``resolved`` records the calibration method and
+    the realised scale/shift plus the pre- and post-calibration spreads, for provenance.
+    """
+    np = require("numpy")
+    from .steps import BLEND_CALIBRATIONS
+
+    if calibrate not in BLEND_CALIBRATIONS:
+        raise ValueError(
+            f"unknown blend calibrate {calibrate!r}; use one of {BLEND_CALIBRATIONS}"
+        )
+    z = 0.5 * (_standardize(left_score) + _standardize(right_score))
+    if calibrate == "none":
+        blended, a, b = z, 1.0, 0.0
+    else:
+        a, b = _affine_to_match(z, raw_score, method=calibrate)
+        blended = a * z + b
+    resolved = {
+        "calibrate": calibrate,
+        "scale": float(a),
+        "shift": float(b),
+        "blend_std_precalibration": float(z.std()),
+        "blend_std": float(np.asarray(blended).std()),
+        "raw_std": float(np.asarray(raw_score).std()),
+    }
+    return blended, resolved
+
+
 # --------------------------------------------------------------------------------------- #
 # the compute entry point                                                                  #
 # --------------------------------------------------------------------------------------- #
@@ -233,8 +321,11 @@ def smooth(
 
     Choose *what to smooth over* with ``steps``: ``"spatial"`` (default), ``"dm"`` (the
     expression manifold, via ``kompot.smooth_expression``), or ``"dm+spatial"`` to compose both
-    -- the spatial step then consumes the manifold-denoised expression. Pass
-    :class:`~spatial_smooth.steps.Step` objects instead of a shorthand for full control.
+    -- the spatial step then consumes the manifold-denoised expression. ``"blend"`` is different:
+    it runs the spatial and cell-state views *independently* on the raw expression and returns a
+    symmetric, range-calibrated mean of the two, so it stays distinct from both parents (see
+    :class:`~spatial_smooth.steps.Blend`). Pass :class:`~spatial_smooth.steps.Step` objects
+    instead of a shorthand for full control.
 
     Parameters
     ----------
@@ -246,8 +337,11 @@ def smooth(
         Base name for the outputs (see the module docstring's storage contract).
     steps
         A shorthand (``"spatial"``, ``"dm"``, ``"dm+spatial"``, ``"spatial+dm"``,
-        ``"spatial-kde"``, ``"spatial-gp"``, ``"none"``), a single ``Step``, or a sequence of
-        either. Applied left to right; each step consumes the previous step's output.
+        ``"spatial-kde"``, ``"spatial-gp"``, ``"none"``, ``"blend"``), a single ``Step``, a
+        :class:`~spatial_smooth.steps.Blend`, or a sequence of steps. A list of steps is applied
+        left to right, each consuming the previous step's output; ``"blend"`` /
+        :class:`~spatial_smooth.steps.Blend` instead combines two independent branches (see
+        above).
     layer
         Expression layer to read (``None`` -> ``adata.X``). Should be log-normalised.
     score
@@ -293,7 +387,19 @@ def smooth(
     if score not in SCORE_METHODS:
         raise ValueError(f"unknown score {score!r}; use one of {SCORE_METHODS}")
 
-    pipeline: List[Step] = resolve_steps(steps)
+    blend_spec = as_blend(steps)
+    if blend_spec is not None:
+        from .steps import BLEND_CALIBRATIONS
+
+        if blend_spec.calibrate not in BLEND_CALIBRATIONS:  # fail before the branches run
+            raise ValueError(
+                f"unknown blend calibrate {blend_spec.calibrate!r}; use one of {BLEND_CALIBRATIONS}"
+            )
+        left_pipeline: List[Step] = resolve_steps(blend_spec.left)
+        right_pipeline: List[Step] = resolve_steps(blend_spec.right)
+        pipeline: List[Step] = left_pipeline + right_pipeline  # for embed/basis validation only
+    else:
+        pipeline = resolve_steps(steps)
 
     if copy:
         adata = adata.copy()
@@ -319,29 +425,47 @@ def smooth(
     raw_matrix = _gene_matrix(adata, genes, layer)
     _require_finite_genes(raw_matrix, genes)
     stats = _raw_stats(raw_matrix)
-
-    matrix = raw_matrix
-    step_records: List[Dict[str, Any]] = []
-    for step in pipeline:
-        matrix, resolved = step.apply(matrix, adata, genes, progress=progress)
-        matrix = np.asarray(matrix, dtype=np.float64)
-        if matrix.shape != raw_matrix.shape:  # pragma: no cover - defensive
-            raise RuntimeError(
-                f"step {type(step).__name__} changed the matrix shape "
-                f"{raw_matrix.shape} -> {matrix.shape}"
-            )
-        record = step.to_dict()
-        record["resolved"] = resolved
-        step_records.append(record)
-
-    raw_key = f"{name}_raw"
-    adata.obs[raw_key] = _combine(raw_matrix, score, stats).astype(np.float32)
-    adata.obs[name] = _combine(matrix, score, stats).astype(np.float32)
+    raw_score = _combine(raw_matrix, score, stats)
 
     genes_key = ""
-    if store_genes:
-        genes_key = f"{name}_smoothed"
-        adata.obsm[genes_key] = matrix.astype(np.float32)
+    if blend_spec is not None:
+        # Two branches, run independently on the same raw expression, then symmetrically
+        # averaged and range-calibrated. Because neither branch consumes the other, the blend
+        # stays distinct from both parents -- unlike a linear "dm+spatial" composition.
+        left_matrix, left_records = _run_pipeline(left_pipeline, raw_matrix, adata, genes, progress)
+        right_matrix, right_records = _run_pipeline(right_pipeline, raw_matrix, adata, genes, progress)
+        left_score = _combine(left_matrix, score, stats)
+        right_score = _combine(right_matrix, score, stats)
+        score_values, blend_resolved = _blend_field(
+            left_score, right_score, raw_score, calibrate=blend_spec.calibrate
+        )
+        step_records = [
+            {
+                "kind": "blend",
+                "calibrate": str(blend_spec.calibrate),
+                "left": left_records,
+                "right": right_records,
+                "resolved": blend_resolved,
+            }
+        ]
+        if store_genes:
+            # A blend combines *scores*, not gene matrices, so there is no single smoothed
+            # (n_obs, n_genes) field to store. Be explicit rather than write something wrong.
+            warnings.warn(
+                "store_genes has no effect for steps='blend': a blend combines the per-branch "
+                "scores, not a single smoothed gene matrix, so no obsm layer is written.",
+                stacklevel=2,
+            )
+    else:
+        matrix, step_records = _run_pipeline(pipeline, raw_matrix, adata, genes, progress)
+        score_values = _combine(matrix, score, stats)
+        if store_genes:
+            genes_key = f"{name}_smoothed"
+            adata.obsm[genes_key] = matrix.astype(np.float32)
+
+    raw_key = f"{name}_raw"
+    adata.obs[raw_key] = raw_score.astype(np.float32)
+    adata.obs[name] = np.asarray(score_values, dtype=np.float32)
 
     from . import __version__
 

@@ -29,10 +29,15 @@ Steps
    :members:
    :exclude-members: apply, to_dict
 
+.. autoclass:: spatial_smooth.steps.Blend
+   :members:
+
 .. autoclass:: spatial_smooth.steps.Step
    :members:
 
 .. autofunction:: spatial_smooth.steps.resolve_steps
+
+.. autofunction:: spatial_smooth.steps.as_blend
 
 
 Reading results back

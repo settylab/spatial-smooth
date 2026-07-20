@@ -64,6 +64,29 @@ Doing *just one of the two* is the ordinary case, not a special one: ``steps="sp
 ``steps="dm"`` are single-element pipelines.
 
 
+Blending: a symmetric alternative to composition
+------------------------------------------------
+
+``"dm+spatial"`` *composes* the two smoothers: the spatial step consumes the cell-state-denoised
+expression, so the result inherits the spatial parent's footprint and collapses toward it.
+``steps="blend"`` (a :class:`~spatial_smooth.steps.Blend`) does something different -- it runs the
+two views **independently** on the raw expression, standardises each branch's score to a common
+footing, averages them, and finally rescales the average back onto the raw score's scale. Because
+neither branch consumes the other, the blend stays a genuinely distinct field, roughly equidistant
+from both parents rather than collapsing onto either::
+
+    ss.smooth(adata, genes, "sig", steps="blend")            # default: spatial + dm
+    ss.smooth(adata, genes, "sig", steps=ss.Blend(calibrate="iqr"))  # robust calibration
+
+The **range calibration** is what keeps a blended field usable alongside the others. The raw
+standardised average lives in z-units, which do not share a colour bar with ``raw``, ``spatial``
+or ``dm``. The final affine step matches the blend's centre and spread to the raw score's -- by
+mean and standard deviation (``calibrate="std"``, the default) or by median and inter-quartile
+range (``calibrate="iqr"``, robust to outlier cells). The map is monotone, so it never reorders
+cells; the realised scale and shift are recorded in
+:func:`~spatial_smooth.core.provenance`.
+
+
 The storage contract
 --------------------
 

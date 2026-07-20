@@ -34,6 +34,11 @@ shorthand           pipeline                                              meanin
 ``"spatial-gp"``    ``[KompotGP(basis="spatial", ls_factor=0.3)]``        spatial, GP engine
 ``"none"``          ``[]``                                                no smoothing (raw only)
 ==================  ====================================================  ==========================
+
+One more spec is **not** a linear pipeline: ``"blend"`` (a :class:`Blend`) runs a spatial and a
+cell-state branch *independently* on the raw expression, then symmetrically averages and
+range-calibrates their standardised scores. Because it branches rather than chains, it is
+handled by :func:`as_blend` (and :func:`spatial_smooth.smooth`), not :func:`resolve_steps`.
 """
 from __future__ import annotations
 
@@ -48,8 +53,10 @@ __all__ = [
     "KnnGaussian",
     "Kde",
     "KompotGP",
+    "Blend",
     "pick_smoothed_layer",
     "resolve_steps",
+    "as_blend",
     "DM_KEY",
     "SPATIAL_KEY",
     "SHORTHANDS",
@@ -376,6 +383,78 @@ class KompotGP(Step):
         }
 
 
+@dataclass(frozen=True)
+class Blend:
+    """Symmetric mean of two independently smoothed, standardized fields, range-calibrated.
+
+    A :class:`Blend` is **not** a step in a linear pipeline -- it is a *combiner of two
+    pipelines*. Unlike ``"dm+spatial"`` (which feeds the cell-state-denoised expression into the
+    spatial smoother and so collapses toward the spatial parent), a blend runs its two branches
+    on the **same raw expression, independently**, scores each branch, standardises the two
+    scores to a common footing, averages them, and finally rescales the average back onto the raw
+    score's scale. The result stays symmetric -- distinct from either parent -- because neither
+    branch consumes the other.
+
+    Why standardise before averaging
+    --------------------------------
+    A spatial-smoothed score and a cell-state-smoothed score suppress noise by different amounts,
+    so their spreads differ. Averaging them raw would let the wider-spread branch dominate.
+    Standardising each branch to zero mean and unit variance *first* makes the average an equal,
+    symmetric mixture of the two structures rather than a spread-weighted one.
+
+    Range calibration
+    -----------------
+    The standardised average lives in z-units (roughly ``[-2, 2]``), which does **not** match the
+    raw score's scale, so a blended field would not share a colour bar with ``raw``, ``spatial``
+    or ``dm``. The final step is a single deterministic affine map ``x -> a*x + b`` chosen so the
+    blended field's centre and spread match the **raw score's** (the same ``obs[f"{name}_raw"]``
+    the other modes are measured against). Two ``calibrate`` methods:
+
+    * ``"std"`` (default) matches the mean and standard deviation exactly (the first two moments).
+    * ``"iqr"`` matches the median and inter-quartile range -- robust to the occasional outlier
+      cell, at the cost of not pinning the moments exactly.
+    * ``"none"`` leaves the field in z-units (the un-calibrated prototype).
+
+    The map is affine and monotone, so calibration never reorders cells or changes the field's
+    shape -- it only places the numbers on the raw score's scale. The realised scale/shift are
+    recorded in :func:`spatial_smooth.provenance` under the blend step's ``"resolved"`` entry.
+
+    Parameters
+    ----------
+    left, right
+        The two branches, each any :func:`resolve_steps` spec (a shorthand, a :class:`Step`, or a
+        list). Default to ``"spatial"`` and ``"dm"`` -- the physical-neighbour and
+        transcriptional-neighbour views.
+    calibrate
+        ``"std"`` (default), ``"iqr"`` or ``"none"`` -- see above.
+    """
+
+    left: "StepSpec" = "spatial"
+    right: "StepSpec" = "dm"
+    calibrate: str = "std"
+
+    kind: str = field(default="blend", init=False, repr=False)
+
+
+#: The calibration methods :class:`Blend` accepts.
+BLEND_CALIBRATIONS = ("std", "iqr", "none")
+
+
+def as_blend(spec) -> Optional["Blend"]:
+    """Return a :class:`Blend` when ``spec`` asks for one, else ``None``.
+
+    Recognises the ``"blend"`` shorthand and any :class:`Blend` instance. Everything else -- a
+    linear pipeline shorthand, a :class:`Step`, a list -- returns ``None`` so the caller falls
+    through to :func:`resolve_steps`. Kept separate from ``resolve_steps`` because a blend is a
+    branching combiner, not a ``list[Step]``.
+    """
+    if isinstance(spec, Blend):
+        return spec
+    if isinstance(spec, str) and spec.strip().lower() == "blend":
+        return Blend()
+    return None
+
+
 #: Mapping from string shorthand to a pipeline factory. See the module docstring.
 SHORTHANDS = {
     "none": lambda: [],
@@ -410,6 +489,12 @@ def resolve_steps(spec: StepSpec) -> List[Step]:
         return [spec]
     if isinstance(spec, str):
         key = spec.strip().lower()
+        if key == "blend":
+            raise ValueError(
+                "'blend' is not a linear pipeline, so it does not resolve to a list of steps. "
+                "Pass it straight to spatial_smooth.smooth(..., steps='blend'), or build a "
+                "spatial_smooth.Blend(...) for custom branches."
+            )
         if key not in SHORTHANDS:
             raise ValueError(
                 f"unknown steps shorthand {spec!r}; expected one of "
