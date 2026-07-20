@@ -14,7 +14,15 @@ key                                    contents
 ``adata.obs[f"{name}_raw"]``           unsmoothed score from the same genes and combiner
 ``adata.obsm[f"{name}_smoothed"]``     ``(n_obs, n_genes)`` smoothed expression (``store_genes=True``)
 ``adata.uns["spatial_smooth"][name]``  provenance: genes, pipeline, resolved bandwidths, version
+``adata.layers["_sscache_<hash>"]``    smoothing-cache artifact: a step's output (``cache=True``)
+``adata.uns["spatial_smooth_cache"]``  smoothing-cache index: hash -> layer-key + params (JSON)
 =====================================  ==============================================================
+
+The last two rows are the reuse cache (:func:`smooth`'s ``cache`` argument): each smoother's
+output, keyed by a hash of its input, parameters and basis, so a repeated computation -- e.g.
+``"blend"``'s branches re-running the ``"spatial"`` and ``"dm"`` steps -- is served from the layer
+instead of recomputed. Matrices live in ``layers``, the tiny index in ``uns``. Both serialize with
+the object; :func:`clear_smooth_cache` drops them, ``smooth(..., cache=False)`` opts out.
 
 Scoring contract
 ----------------
@@ -31,9 +39,10 @@ the raw and the smoothed score. Two consequences, both intended:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import warnings
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ._deps import require
 from .steps import DM_KEY, Step, StepSpec, as_blend, resolve_steps
@@ -44,12 +53,28 @@ __all__ = [
     "provenance",
     "list_results",
     "compute_diffusion_map",
+    "clear_smooth_cache",
     "UNS_KEY",
+    "CACHE_KEY",
     "SCORE_METHODS",
 ]
 
 #: Top-level ``adata.uns`` key under which every result's provenance lives.
 UNS_KEY = "spatial_smooth"
+
+#: ``adata.uns`` key holding the smoothing cache *index* (hash -> layer-key + param
+#: signature + resolved params), JSON-encoded. The smoothed matrices themselves live in
+#: ``adata.layers`` under :data:`CACHE_LAYER_PREFIX`-namespaced keys, never here -- the index
+#: stays small and the artefacts are ordinary layers you can inspect or clear.
+CACHE_KEY = "spatial_smooth_cache"
+
+#: Namespace prefix for cache-artefact layers. A leading underscore and this obvious tag make
+#: every cached matrix trivially recognisable and clearable (:func:`clear_smooth_cache`).
+CACHE_LAYER_PREFIX = "_sscache_"
+
+#: Default LRU cap on the number of cached smoothings kept on one AnnData. Bounds the ``.h5ad``
+#: bloat the operator flagged; override per call with ``smooth(..., cache_max_entries=N)``.
+SMOOTH_CACHE_MAX_ENTRIES = 64
 
 #: Supported multi-gene score combiners.
 SCORE_METHODS = ("mean_z", "mean")
@@ -197,18 +222,183 @@ def _raw_stats(matrix):
     return mu, sd
 
 
-def _run_pipeline(pipeline, raw_matrix, adata, genes, progress):
+# --------------------------------------------------------------------------------------- #
+# smoothing cache                                                                          #
+# --------------------------------------------------------------------------------------- #
+# A *step* is a pure function of three things: the matrix it consumes, its own parameters, and
+# the basis (``obsm``) it smooths over. Hash those three and you can reuse a smoother's output
+# whenever the identical computation recurs -- which is exactly what happens when a four-mode
+# figure runs ``spatial``, ``dm`` and ``blend``: blend's two branches reproduce the ``spatial``
+# and ``dm`` steps verbatim, so with the cache on the expensive diffusion-map GP runs *once*
+# total instead of twice. Invalidation is automatic: change the input, a parameter, or the
+# embedding and the hash changes, so a stale result can never be served.
+
+
+def _step_param_signature(step: Step) -> str:
+    """Canonical, deterministic parameter signature of a step (class + sorted fields)."""
+    return json.dumps(step.to_dict(), sort_keys=True)
+
+
+def _array_digest(h, tag: bytes, arr) -> None:
+    """Fold an array's shape, dtype and exact bytes into a running hash under ``tag``."""
+    np = require("numpy")
+    arr = np.ascontiguousarray(arr)
+    h.update(tag)
+    h.update(repr(arr.shape).encode())
+    h.update(b"|")
+    h.update(str(arr.dtype).encode())
+    h.update(b"|")
+    h.update(arr.tobytes())
+
+
+def _cache_key(step: Step, input_matrix, adata) -> str:
+    """``sha256`` over (input matrix bytes, canonical step params, basis bytes).
+
+    The input matrix is hashed as its exact stored floats -- ``np.ascontiguousarray(...).tobytes()``
+    plus shape and dtype -- never a re-derived or rounded copy, so the key matches the values a
+    cache hit will replay bit for bit.
+    """
+    h = hashlib.sha256()
+    _array_digest(h, b"matrix|", input_matrix)
+    h.update(b"step|")
+    h.update(_step_param_signature(step).encode())
+    _array_digest(h, b"basis|", adata.obsm[step.basis])
+    return h.hexdigest()
+
+
+def _empty_cache_index() -> Dict[str, Any]:
+    return {"version": 1, "entries": {}, "order": []}
+
+
+def _load_cache_index(adata) -> Dict[str, Any]:
+    """Decode the JSON cache index from ``adata.uns`` (empty scaffold if absent/corrupt)."""
+    raw = adata.uns.get(CACHE_KEY)
+    if raw is None:
+        return _empty_cache_index()
+    if not isinstance(raw, str):  # h5ad may hand back a numpy str_
+        raw = str(raw)
+    try:
+        idx = json.loads(raw)
+    except (ValueError, TypeError):  # pragma: no cover - defensive against a mangled index
+        return _empty_cache_index()
+    idx.setdefault("version", 1)
+    idx.setdefault("entries", {})
+    idx.setdefault("order", [])
+    return idx
+
+
+def _save_cache_index(adata, idx: Dict[str, Any]) -> None:
+    adata.uns[CACHE_KEY] = json.dumps(idx)
+
+
+def _cache_get(adata, key: str) -> Optional[Tuple[Any, Dict[str, Any]]]:
+    """Return ``(matrix, resolved)`` for a cache hit, or ``None`` on a miss.
+
+    A hit bumps the key to most-recently-used. A dangling entry (index says hit, layer gone --
+    e.g. a manual ``del adata.layers[...]``) is pruned and treated as a miss.
+    """
+    np = require("numpy")
+    idx = _load_cache_index(adata)
+    entry = idx["entries"].get(key)
+    if entry is None:
+        return None
+    layer_key = entry["layer"]
+    if layer_key not in adata.layers:
+        idx["entries"].pop(key, None)
+        if key in idx["order"]:
+            idx["order"].remove(key)
+        _save_cache_index(adata, idx)
+        return None
+    cols = list(entry["cols"])
+    full = np.asarray(adata.layers[layer_key])
+    matrix = np.ascontiguousarray(full[:, cols], dtype=np.float64)
+    if key in idx["order"]:
+        idx["order"].remove(key)
+    idx["order"].append(key)
+    _save_cache_index(adata, idx)
+    return matrix, dict(entry.get("resolved", {}))
+
+
+def _cache_put(adata, key: str, step: Step, out_matrix, genes, resolved, cache_max_entries) -> None:
+    """Store a step's output as a namespaced layer and record the index entry (LRU-evicting)."""
+    np = require("numpy")
+    idx = _load_cache_index(adata)
+    entries, order = idx["entries"], idx["order"]
+
+    # A layer must be (n_obs, n_vars); a signature smoothing is (n_obs, n_genes). Scatter the
+    # signature columns into a full-width layer (rest NaN) and record which columns they are, so
+    # a hit gathers exactly the stored floats back. float64 is kept, not the float32 of
+    # `store_genes`, so a replayed matrix is byte-identical to a fresh compute.
+    cols = [int(c) for c in adata.var_names.get_indexer(genes)]
+    layer_key = f"{CACHE_LAYER_PREFIX}{key}"
+    full = np.full((adata.n_obs, adata.n_vars), np.nan, dtype=np.float64)
+    full[:, cols] = np.asarray(out_matrix, dtype=np.float64)
+    adata.layers[layer_key] = full
+
+    entries[key] = {
+        "layer": layer_key,
+        "cols": cols,
+        "resolved": resolved,
+        "params": _step_param_signature(step),
+    }
+    if key in order:
+        order.remove(key)
+    order.append(key)
+
+    cap = SMOOTH_CACHE_MAX_ENTRIES if cache_max_entries is None else int(cache_max_entries)
+    if cap is not None and cap > 0:
+        while len(order) > cap:
+            evicted = order.pop(0)
+            old = entries.pop(evicted, None)
+            if old is not None and old["layer"] in adata.layers:
+                del adata.layers[old["layer"]]
+    _save_cache_index(adata, idx)
+
+
+def clear_smooth_cache(adata) -> int:
+    """Remove every smoothing-cache artefact from ``adata`` and return how many layers were dropped.
+
+    Deletes the :data:`CACHE_LAYER_PREFIX`-namespaced layers and the :data:`CACHE_KEY` index in
+    ``uns``. Stored *results* (``obs``/``obsm``/``uns['spatial_smooth']``) are untouched -- only
+    the reuse cache is cleared, so plotting a previously smoothed result still works afterwards.
+    """
+    removed = 0
+    for layer_key in [
+        name
+        for name in list(adata.layers)
+        if isinstance(name, str) and name.startswith(CACHE_LAYER_PREFIX)
+    ]:
+        del adata.layers[layer_key]
+        removed += 1
+    adata.uns.pop(CACHE_KEY, None)
+    return removed
+
+
+def _run_pipeline(pipeline, raw_matrix, adata, genes, progress, *, cache=False, cache_max_entries=None):
     """Apply a linear pipeline to ``raw_matrix``, returning the smoothed matrix and step records.
 
     Factored out of :func:`smooth` so that a :class:`~spatial_smooth.steps.Blend` can run two
     independent branches through the identical machinery. Each step consumes the previous step's
     output; the shape is asserted to be preserved so a misbehaving step fails loudly.
+
+    When ``cache`` is set, each step's output is memoized on ``adata`` keyed by
+    :func:`_cache_key`; a hit skips the smoother and replays the stored matrix (and its resolved
+    params) verbatim, so the step records -- and every downstream output -- are byte-identical to
+    a cache-off run.
     """
     np = require("numpy")
     matrix = raw_matrix
     step_records: List[Dict[str, Any]] = []
     for step in pipeline:
-        matrix, resolved = step.apply(matrix, adata, genes, progress=progress)
+        key = _cache_key(step, matrix, adata) if cache else None
+        hit = _cache_get(adata, key) if cache else None
+        if hit is not None:
+            matrix, resolved = hit
+        else:
+            matrix, resolved = step.apply(matrix, adata, genes, progress=progress)
+            matrix = np.asarray(matrix, dtype=np.float64)
+            if cache:
+                _cache_put(adata, key, step, matrix, genes, resolved, cache_max_entries)
         matrix = np.asarray(matrix, dtype=np.float64)
         if matrix.shape != raw_matrix.shape:  # pragma: no cover - defensive
             raise RuntimeError(
@@ -302,6 +492,8 @@ def smooth(
     store_genes: bool = False,
     auto_embed: bool = True,
     progress: bool = False,
+    cache: bool = True,
+    cache_max_entries: Optional[int] = None,
     copy: bool = False,
 ):
     """Smooth a gene signature through a pipeline of steps and score it per cell.
@@ -358,6 +550,18 @@ def smooth(
         absent. Set ``False`` to fail loudly instead.
     progress
         Show the GP backend's progress bar.
+    cache
+        Memoize each smoother's output on ``adata``, keyed by a stable hash of its input matrix,
+        parameters and basis, and reuse it on a hit (default ``True``). Its purpose is to avoid
+        recomputing the same smoothing twice -- most visibly, ``"blend"``'s two branches reuse the
+        results of a prior ``"spatial"`` and ``"dm"`` call, so the diffusion-map GP runs once
+        across all three modes. Cached matrices live in ``adata.layers`` under
+        ``"_sscache_<hash>"`` and their index in ``adata.uns['spatial_smooth_cache']``; both ride
+        along in ``.h5ad``. Set ``False`` to neither read nor write the cache;
+        :func:`clear_smooth_cache` removes it wholesale.
+    cache_max_entries
+        LRU cap on how many cached smoothings ``adata`` retains (``None`` ->
+        :data:`SMOOTH_CACHE_MAX_ENTRIES`). Bounds the ``.h5ad`` growth caching introduces.
     copy
         Work on a copy and leave the input untouched.
 
@@ -432,8 +636,14 @@ def smooth(
         # Two branches, run independently on the same raw expression, then symmetrically
         # averaged and range-calibrated. Because neither branch consumes the other, the blend
         # stays distinct from both parents -- unlike a linear "dm+spatial" composition.
-        left_matrix, left_records = _run_pipeline(left_pipeline, raw_matrix, adata, genes, progress)
-        right_matrix, right_records = _run_pipeline(right_pipeline, raw_matrix, adata, genes, progress)
+        left_matrix, left_records = _run_pipeline(
+            left_pipeline, raw_matrix, adata, genes, progress,
+            cache=cache, cache_max_entries=cache_max_entries,
+        )
+        right_matrix, right_records = _run_pipeline(
+            right_pipeline, raw_matrix, adata, genes, progress,
+            cache=cache, cache_max_entries=cache_max_entries,
+        )
         left_score = _combine(left_matrix, score, stats)
         right_score = _combine(right_matrix, score, stats)
         score_values, blend_resolved = _blend_field(
@@ -457,7 +667,10 @@ def smooth(
                 stacklevel=2,
             )
     else:
-        matrix, step_records = _run_pipeline(pipeline, raw_matrix, adata, genes, progress)
+        matrix, step_records = _run_pipeline(
+            pipeline, raw_matrix, adata, genes, progress,
+            cache=cache, cache_max_entries=cache_max_entries,
+        )
         score_values = _combine(matrix, score, stats)
         if store_genes:
             genes_key = f"{name}_smoothed"

@@ -118,6 +118,26 @@ That is a contract, not a hope: a test blocks `kompot`, `KDEpy` and `palantir` a
 machinery, replaces every compute entry point with a function that raises, and *then* renders a
 reloaded file.
 
+### The same smoothing never runs twice
+
+Within a session, each smoother's output is memoized on the `AnnData`, keyed by a stable hash of
+its input matrix, parameters and basis. A repeated computation is served from the cache instead of
+recomputed — so a four-mode figure that runs `spatial`, `dm` **and** `blend` pays for the
+expensive diffusion-map GP **once**, not twice: `blend`'s two branches reuse the results of the
+standalone `spatial` and `dm` calls. Change the input, a parameter, or the embedding and the hash
+changes — a stale result can never be served.
+
+```python
+ss.smooth(adata, genes, "spatial", steps="spatial")
+ss.smooth(adata, genes, "dm",      steps="dm")       # the GP runs here ...
+ss.smooth(adata, genes, "blend",   steps="blend")    # ... and is reused here, not re-run
+```
+
+The cached matrices live in `adata.layers["_sscache_<hash>"]` and their index in
+`adata.uns["spatial_smooth_cache"]`; both ride along in `.h5ad`. It is bounded (an LRU cap,
+`smooth(..., cache_max_entries=N)`) and opt-out (`smooth(..., cache=False)`), and
+`ss.clear_smooth_cache(adata)` drops every cache artifact while leaving your stored results intact.
+
 ---
 
 ## Plotting wraps scanpy and squidpy

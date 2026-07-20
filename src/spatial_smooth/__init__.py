@@ -54,7 +54,9 @@ __version__ = "0.1.0"
 
 from ._deps import check_dependencies
 from .core import (
+    CACHE_KEY,
     UNS_KEY,
+    clear_smooth_cache,
     compute_diffusion_map,
     list_results,
     provenance,
@@ -92,6 +94,8 @@ __all__ = [
     "smooth",
     "compute_diffusion_map",
     "select_cells",
+    "clear_smooth_cache",
+    "CACHE_KEY",
     # steps
     "Step",
     "KnnGaussian",
