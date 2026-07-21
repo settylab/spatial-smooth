@@ -62,6 +62,7 @@ from .core import (
     provenance,
     select_cells,
     smooth,
+    smooth_all,
 )
 from .smoothers import (
     SpatialSmoothWarning,
@@ -92,6 +93,7 @@ __all__ = [
     "__version__",
     # compute
     "smooth",
+    "smooth_all",
     "compute_diffusion_map",
     "select_cells",
     "clear_smooth_cache",
