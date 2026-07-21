@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import spatial_smooth as ss
-from spatial_smooth.core import CACHE_LAYER_PREFIX
+from spatial_smooth.core import CACHE_LAYER_PREFIX, _cache_key
 from conftest import _make_adata, needs_kompot
 
 
@@ -127,6 +127,74 @@ def test_changed_input_param_or_basis_misses(adata, signature, monkeypatch):
     adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"]) * 2.0
     ss.smooth(adata, signature, "d", steps="spatial")
     assert calls["n"] == 4
+
+
+# --------------------------------------------------------------------------------------- #
+# claim 4 -- a condition-aware GP keys on the grouping *contents*, not just its name        #
+# --------------------------------------------------------------------------------------- #
+# The step's parameter signature records `groupby`'s column *name* and the `condition` label,
+# but a GP fitted with groupby/condition trains only on `obs[groupby] == condition`. If the key
+# hashed the name alone, mutating that column in place -- same name, different assignment --
+# would leave the key unchanged and serve a result fitted on the OLD grouping: a silent stale
+# hit. So `_cache_key` folds the column's contents in; change the grouping, change the key.
+
+
+def _reversed_contents(col):
+    """The same categorical column with its per-cell values reversed (contents, not dtype)."""
+    import pandas as pd
+
+    return pd.Categorical(np.asarray(col.astype(str))[::-1])
+
+
+def test_cache_key_folds_groupby_column_contents(adata):
+    """A groupby GP's key changes when the grouping column's contents change in place."""
+    step = ss.KompotGP(groupby="condition", condition="a")
+    matrix = np.asarray(adata.X, dtype=np.float64)
+
+    before = _cache_key(step, matrix, adata)
+    adata.obs["condition"] = _reversed_contents(adata.obs["condition"])
+    after = _cache_key(step, matrix, adata)
+    assert before != after, "a mutated grouping column must change the key (else a stale hit)"
+
+
+def test_cache_key_ignores_unrelated_obs_for_non_groupby_steps(adata):
+    """A step without `groupby` is not keyed on any obs column -- the same change leaves it alone."""
+    matrix = np.asarray(adata.X, dtype=np.float64)
+    plain = ss.KnnGaussian()                          # no groupby
+    gp_plain = ss.KompotGP()                          # groupby is None
+    before_plain = _cache_key(plain, matrix, adata)
+    before_gp = _cache_key(gp_plain, matrix, adata)
+
+    adata.obs["condition"] = _reversed_contents(adata.obs["condition"])
+    assert _cache_key(plain, matrix, adata) == before_plain
+    assert _cache_key(gp_plain, matrix, adata) == before_gp
+
+
+@needs_kompot
+def test_mutated_grouping_misses_and_recomputes(adata, signature, monkeypatch):
+    """End to end: flip the grouping in place -> the GP re-runs and the score changes.
+
+    Before the key folded the grouping's contents, the second call was a false hit that replayed
+    the field fitted on the *old* grouping. Now it misses, refits on the new grouping, and the two
+    fields differ.
+    """
+    calls = _count_apply(monkeypatch, ss.KompotGP)
+    step = [ss.KompotGP(n_landmarks=100, groupby="condition", condition="a")]
+
+    ss.smooth(adata, signature, "g1", steps=step, auto_embed=False)
+    assert calls["n"] == 1
+    first = adata.obs["g1"].to_numpy().copy()
+
+    # A genuinely different assignment of the same two labels to the same cells.
+    rng = np.random.default_rng(1)
+    import pandas as pd
+
+    adata.obs["condition"] = pd.Categorical(np.where(rng.random(adata.n_obs) < 0.5, "a", "b"))
+    ss.smooth(adata, signature, "g2", steps=step, auto_embed=False)
+    assert calls["n"] == 2, "the mutated grouping must MISS the cache and recompute the GP"
+    assert not np.allclose(first, adata.obs["g2"].to_numpy()), (
+        "refitting on a different grouping must yield a different field"
+    )
 
 
 # --------------------------------------------------------------------------------------- #

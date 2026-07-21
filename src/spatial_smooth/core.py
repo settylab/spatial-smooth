@@ -24,6 +24,13 @@ output, keyed by a hash of its input, parameters and basis, so a repeated comput
 instead of recomputed. Matrices live in ``layers``, the tiny index in ``uns``. Both serialize with
 the object; :func:`clear_smooth_cache` drops them, ``smooth(..., cache=False)`` opts out.
 
+Reuse across *signatures* is one flag further: ``smooth(..., all_genes=True)`` (and
+:func:`smooth_all`) smooth the **whole** ``(n_obs, n_vars)`` matrix, so the cache key stops
+depending on which genes you asked for. Smooth every gene through ``"spatial"`` and ``"dm"`` once
+and every later signature, single gene and ``"blend"`` reads those two pre-smoothed layers -- the
+diffusion-map GP runs exactly once total, and each signature's score is gathered from the full
+layer rather than re-smoothed.
+
 Scoring contract
 ----------------
 The multi-gene score is ``mean_z`` by default: each gene is standardised and the standardised
@@ -49,6 +56,7 @@ from .steps import DM_KEY, Step, StepSpec, as_blend, resolve_steps
 
 __all__ = [
     "smooth",
+    "smooth_all",
     "select_cells",
     "provenance",
     "list_results",
@@ -251,18 +259,43 @@ def _array_digest(h, tag: bytes, arr) -> None:
     h.update(arr.tobytes())
 
 
+def _group_bytes(column) -> bytes:
+    """Deterministic byte encoding of an ``obs`` column's *values* (order-sensitive).
+
+    NUL-joined string values, so two columns with different contents can never collide and no
+    concatenation aliases another (``["a", "bc"]`` differs from ``["ab", "c"]``).
+    """
+    np = require("numpy")
+    return "\x00".join(str(v) for v in np.asarray(column)).encode("utf-8")
+
+
 def _cache_key(step: Step, input_matrix, adata) -> str:
-    """``sha256`` over (input matrix bytes, canonical step params, basis bytes).
+    """``sha256`` over (input matrix bytes, canonical step params, basis bytes, grouping bytes).
 
     The input matrix is hashed as its exact stored floats -- ``np.ascontiguousarray(...).tobytes()``
     plus shape and dtype -- never a re-derived or rounded copy, so the key matches the values a
     cache hit will replay bit for bit.
+
+    A condition-aware :class:`~spatial_smooth.steps.KompotGP` (``groupby``/``condition``) *fits* on
+    the cells with ``adata.obs[groupby] == condition`` and evaluates everywhere. The step's
+    parameter signature records the ``groupby`` *column name* and the ``condition`` *label* -- but
+    not the column's *contents*. Were only the name hashed, mutating that grouping column in place
+    between two otherwise-identical calls would leave the key unchanged and serve a **stale** result
+    fitted on the old grouping. So the column's values are folded into the key: change the grouping,
+    change the key, miss the cache. (For steps without ``groupby`` nothing extra is hashed, so their
+    keys are unaffected.)
     """
     h = hashlib.sha256()
     _array_digest(h, b"matrix|", input_matrix)
     h.update(b"step|")
     h.update(_step_param_signature(step).encode())
     _array_digest(h, b"basis|", adata.obsm[step.basis])
+    groupby = getattr(step, "groupby", None)
+    if groupby is not None and groupby in adata.obs:
+        h.update(b"groupby|")
+        h.update(str(groupby).encode())
+        h.update(b"|groupvals|")
+        h.update(_group_bytes(adata.obs[groupby]))
     return h.hexdigest()
 
 
@@ -494,6 +527,7 @@ def smooth(
     progress: bool = False,
     cache: bool = True,
     cache_max_entries: Optional[int] = None,
+    all_genes: bool = False,
     copy: bool = False,
 ):
     """Smooth a gene signature through a pipeline of steps and score it per cell.
@@ -562,6 +596,25 @@ def smooth(
     cache_max_entries
         LRU cap on how many cached smoothings ``adata`` retains (``None`` ->
         :data:`SMOOTH_CACHE_MAX_ENTRIES`). Bounds the ``.h5ad`` growth caching introduces.
+    all_genes
+        Smooth **every** ``var`` through the pipeline (over the full ``(n_obs, n_vars)`` matrix),
+        then derive this signature's score by gathering its columns from that full result. The
+        point is reuse *across signatures*: because the smoother now sees the whole matrix, the
+        cache key (:func:`_cache_key`) no longer depends on *which* genes you asked for, so a
+        second call for a different signature -- or a single gene -- through the **same** pipeline
+        is a cache hit and re-smooths nothing. Compute ``"spatial"`` and ``"dm"`` once with
+        ``all_genes=True`` and every later signature, single gene and ``"blend"`` reads those two
+        pre-smoothed layers -- the diffusion-map GP runs exactly once total. Requires ``cache=True``
+        (the default) to reuse across calls; see :func:`smooth_all` to warm the layers up front
+        without scoring a throwaway signature.
+
+        The derived score is *exactly* the per-signature result for the linear neighbour smoothers
+        (:class:`~spatial_smooth.steps.KnnGaussian`, :class:`~spatial_smooth.steps.Kde`), which are
+        column-independent, and matches it to floating-point precision (~1e-13) for
+        :class:`~spatial_smooth.steps.KompotGP`, whose Nystrom solve rounds differently at a
+        different matrix width. All signatures derived from one full layer are mutually exact.
+        Every ``var`` must be finite (not just the signature genes), or the call raises naming the
+        offending gene.
     copy
         Work on a copy and leave the input untouched.
 
@@ -631,21 +684,41 @@ def smooth(
     stats = _raw_stats(raw_matrix)
     raw_score = _combine(raw_matrix, score, stats)
 
+    # Choose what the *pipeline* smooths. With `all_genes`, every var goes through the smoother
+    # (so the cache key stops depending on the signature and the work is shared across calls); the
+    # signature's smoothed columns are then gathered out of the full result for scoring. Scoring
+    # itself -- `stats`, `raw_score`, `mean_z` -- always comes from the signature's raw subset,
+    # unchanged. Without `all_genes` the pipeline smooths exactly the signature subset, as before.
+    if all_genes:
+        pipe_genes = list(map(str, adata.var_names))
+        pipe_input = _gene_matrix(adata, pipe_genes, layer)
+        _require_finite_genes(pipe_input, pipe_genes)
+        sig_cols = [int(c) for c in adata.var_names.get_indexer(genes)]
+
+        def _sig(mat):
+            return np.ascontiguousarray(np.asarray(mat)[:, sig_cols], dtype=np.float64)
+    else:
+        pipe_genes = genes
+        pipe_input = raw_matrix
+
+        def _sig(mat):
+            return mat
+
     genes_key = ""
     if blend_spec is not None:
         # Two branches, run independently on the same raw expression, then symmetrically
         # averaged and range-calibrated. Because neither branch consumes the other, the blend
         # stays distinct from both parents -- unlike a linear "dm+spatial" composition.
         left_matrix, left_records = _run_pipeline(
-            left_pipeline, raw_matrix, adata, genes, progress,
+            left_pipeline, pipe_input, adata, pipe_genes, progress,
             cache=cache, cache_max_entries=cache_max_entries,
         )
         right_matrix, right_records = _run_pipeline(
-            right_pipeline, raw_matrix, adata, genes, progress,
+            right_pipeline, pipe_input, adata, pipe_genes, progress,
             cache=cache, cache_max_entries=cache_max_entries,
         )
-        left_score = _combine(left_matrix, score, stats)
-        right_score = _combine(right_matrix, score, stats)
+        left_score = _combine(_sig(left_matrix), score, stats)
+        right_score = _combine(_sig(right_matrix), score, stats)
         score_values, blend_resolved = _blend_field(
             left_score, right_score, raw_score, calibrate=blend_spec.calibrate
         )
@@ -668,13 +741,14 @@ def smooth(
             )
     else:
         matrix, step_records = _run_pipeline(
-            pipeline, raw_matrix, adata, genes, progress,
+            pipeline, pipe_input, adata, pipe_genes, progress,
             cache=cache, cache_max_entries=cache_max_entries,
         )
-        score_values = _combine(matrix, score, stats)
+        smoothed = _sig(matrix)
+        score_values = _combine(smoothed, score, stats)
         if store_genes:
             genes_key = f"{name}_smoothed"
-            adata.obsm[genes_key] = matrix.astype(np.float32)
+            adata.obsm[genes_key] = np.asarray(smoothed, dtype=np.float32)
 
     raw_key = f"{name}_raw"
     adata.obs[raw_key] = raw_score.astype(np.float32)
@@ -688,6 +762,7 @@ def smooth(
         "genes": [str(g) for g in genes],
         "score": str(score),
         "layer": "" if layer is None else str(layer),
+        "all_genes": bool(all_genes),
         "obs_key": str(name),
         "obs_key_raw": str(raw_key),
         "obsm_key_genes": genes_key,
@@ -699,6 +774,86 @@ def smooth(
     if UNS_KEY not in adata.uns or not isinstance(adata.uns[UNS_KEY], dict):
         adata.uns[UNS_KEY] = {}
     adata.uns[UNS_KEY][name] = record
+    return adata
+
+
+def smooth_all(
+    adata,
+    steps: StepSpec = "spatial",
+    *,
+    layer: Optional[str] = None,
+    auto_embed: bool = True,
+    progress: bool = False,
+    cache: bool = True,
+    cache_max_entries: Optional[int] = None,
+    copy: bool = False,
+):
+    """Smooth **every** gene through ``steps`` once, warming the cache -- no signature scored.
+
+    A pre-pass for the ``all_genes`` workflow: run the pipeline (or, for ``"blend"``, each of its
+    two branches) over the full ``(n_obs, n_vars)`` matrix and store the smoothed layers in the
+    reuse cache. Nothing is written to ``obs``/``uns['spatial_smooth']`` -- this computes the
+    expensive part **once, up front**, so every later ``smooth(..., all_genes=True)`` for a
+    signature or a single gene through the same pipeline is a pure cache hit.
+
+    Warm ``"spatial"`` and ``"dm"`` and you have covered ``"spatial"``, ``"dm"``, ``"blend"`` and
+    any single gene through either -- the diffusion-map GP runs exactly once::
+
+        ss.smooth_all(adata, steps="spatial")
+        ss.smooth_all(adata, steps="dm")            # the one GP solve, over every gene
+        ss.smooth(adata, signature, "hippocampus", steps="blend", all_genes=True)   # both hits
+        ss.smooth(adata, ["Ascl1"], "ascl1", steps="dm", all_genes=True)            # hit again
+
+    Parameters mirror :func:`smooth`'s (``layer``, ``auto_embed``, ``progress``, ``cache``,
+    ``cache_max_entries``, ``copy``); there is no ``genes``, ``name`` or ``score`` because nothing
+    is scored. With ``cache=False`` this is a no-op with no lasting effect (the whole point is the
+    cache), so it warns.
+
+    Returns
+    -------
+    AnnData
+        The object, cache warmed, for chaining.
+    """
+    np = require("numpy")
+
+    if copy:
+        adata = adata.copy()
+    if not cache:
+        warnings.warn(
+            "smooth_all(cache=False) computes and discards -- it stores nothing, so no later "
+            "call can reuse it. Leave cache=True (the default) for the warm-up to have any effect.",
+            stacklevel=2,
+        )
+
+    blend_spec = as_blend(steps)
+    if blend_spec is not None:
+        pipelines: List[List[Step]] = [
+            resolve_steps(blend_spec.left),
+            resolve_steps(blend_spec.right),
+        ]
+    else:
+        pipelines = [resolve_steps(steps)]
+
+    flat = [step for pipeline in pipelines for step in pipeline]
+    if auto_embed:
+        for step in flat:
+            if step.basis == DM_KEY and DM_KEY not in adata.obsm:
+                compute_diffusion_map(adata, obsm_key=DM_KEY)
+    for step in flat:
+        if step.basis not in adata.obsm:
+            raise KeyError(
+                f"step {type(step).__name__} needs adata.obsm[{step.basis!r}]; "
+                f"available: {sorted(adata.obsm)}"
+            )
+
+    genes = list(map(str, adata.var_names))
+    full = _gene_matrix(adata, genes, layer)
+    _require_finite_genes(full, genes)
+    for pipeline in pipelines:
+        _run_pipeline(
+            pipeline, full, adata, genes, progress,
+            cache=cache, cache_max_entries=cache_max_entries,
+        )
     return adata
 
 

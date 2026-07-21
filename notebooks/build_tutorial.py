@@ -173,15 +173,35 @@ print(f"{adata.n_obs:,} cells x {adata.n_vars} genes")'''
 
 md(
     """\
-A small **hippocampal** program from the panel — dentate-gyrus and CA markers. Four genes, each
-sparse and noisy on its own."""
+A **hippocampal** program from the panel — dentate-gyrus and CA markers spanning a wide range of
+abundance. We rank the candidate genes by **detection rate** — the fraction of cells with any
+counts — because the *sparse* markers, seen in only a small minority of cells, are the real test
+of smoothing: can it rescue a domain the raw speckle barely shows? The sparsest present marker
+becomes our rescue stress-test later on."""
 )
 
 code(
     '''\
-HIPPOCAMPUS = ["Prox1", "Neurod6", "Wfs1", "Fibcd1"]
-assert set(HIPPOCAMPUS) <= set(adata.var_names)
-HIPPOCAMPUS'''
+# Hippocampal markers this panel may carry; keep whichever are present.
+HIPPO_MARKERS = ["Prox1", "Neurod6", "Wfs1", "Fibcd1", "Ascl1"]
+present = [g for g in HIPPO_MARKERS if g in adata.var_names]
+assert present, "none of the hippocampal markers are in this panel"
+
+def detection_rate(gene):
+    """Fraction of cells with any signal (log1p(0)=0, so X>0 reads it pre- or post-log)."""
+    col = adata[:, gene].X
+    col = col.toarray() if hasattr(col, "toarray") else np.asarray(col)
+    return float((col > 0).mean())
+
+rates = sorted((detection_rate(g), g) for g in present)
+print("hippocampal markers, sparsest first:")
+for r, g in rates:
+    print(f"  {g:9s} detected in {r:6.1%} of cells")
+
+HIPPOCAMPUS = [g for _, g in sorted(rates, reverse=True)]   # densest first
+SPARSE_GENE = rates[0][1]                                    # the sparsest present marker
+print(f"\\nsignature               : {HIPPOCAMPUS}")
+print(f"sparse member to rescue : {SPARSE_GENE} ({rates[0][0]:.1%} of cells)")'''
 )
 
 # --------------------------------------------------------------------------------------- #
@@ -250,8 +270,17 @@ The cell-state step is a Gaussian-process regression over a diffusion map of the
 manifold (`kompot.smooth_expression`, built on `mellon`). It needs `obsm["DM_EigenVectors"]`;
 with `auto_embed=True` (the default) `spatial-smooth` computes it with Palantir if absent.
 
-Everything below runs on the **full section** — every cell, no subsampling. The Gaussian process
-is the slow step (a few minutes); the two spatial smoothers take about a second each."""
+### Smooth every gene **once**, then derive any signature for free
+
+The Gaussian process is slow — a diffusion-map GP over the whole panel is the one expensive thing
+this notebook does. So do it **once**. `ss.smooth_all(adata, steps=...)` smooths *every* gene
+through a view and caches the result; every later `ss.smooth(..., all_genes=True)` — for a
+signature, a single gene, or a `"blend"` — reads those pre-smoothed layers instead of recomputing.
+The smoothers are per-gene operations, so a signature's smoothed columns gathered from the
+all-genes layer are identical to smoothing that signature alone (bit-for-bit for the neighbour
+smoothers; to floating-point precision for the GP). Two passes up front, then nothing recomputes.
+
+Everything below runs on the **full section** — every cell, no subsampling."""
 )
 
 code(
@@ -262,16 +291,37 @@ adata.obsm["DM_EigenVectors"].shape'''
 
 code(
     '''\
-# cell state only: GP over the diffusion map
-ss.smooth(adata, HIPPOCAMPUS, "dm_only", steps="dm")
+# Smooth EVERY gene once through each view. This is the whole cost of the section: one spatial
+# pass and one diffusion-map GP solve, each over the full panel.
+import time
+t0 = time.time()
+ss.smooth_all(adata, steps="spatial")   # fast: Gaussian kNN over tissue coordinates
+ss.smooth_all(adata, steps="dm")        # slow: the GP over the diffusion map -- every gene, ONCE
+print(f"smoothed all {adata.n_vars} genes through both views in {time.time() - t0:.1f}s")'''
+)
 
-# spatial only: Gaussian kNN over tissue coordinates
-ss.smooth(adata, HIPPOCAMPUS, "spatial_only", steps="spatial")
-
-# both, composed: manifold first, then tissue
-ss.smooth(adata, HIPPOCAMPUS, "composed", steps="dm+spatial")
-
+code(
+    '''\
+# Every mode is now *derived* from the two pre-smoothed layers -- a cache hit, no re-smoothing.
+t0 = time.time()
+ss.smooth(adata, HIPPOCAMPUS, "spatial_only", steps="spatial",    all_genes=True)
+ss.smooth(adata, HIPPOCAMPUS, "dm_only",      steps="dm",         all_genes=True)
+ss.smooth(adata, HIPPOCAMPUS, "composed",     steps="dm+spatial", all_genes=True)
+print(f"derived three modes from the cached layers in {time.time() - t0:.2f}s")
 ss.list_results(adata)'''
+)
+
+code(
+    '''\
+# The cheap check: how many distinct smooths did the cache store, and of what kind? The GP is the
+# one that matters -- it must appear exactly once, however many modes read from it.
+import json
+from collections import Counter
+
+entries = json.loads(adata.uns[ss.CACHE_KEY])["entries"].values()
+kinds = Counter(json.loads(e["params"])["kind"] for e in entries)
+print("distinct smooths cached:", dict(kinds))
+print(f"kompot_gp ran {kinds['kompot_gp']}x -- the diffusion-map GP solved every gene exactly once")'''
 )
 
 code(
@@ -286,7 +336,9 @@ md(
     """\
 Read the four panels left to right: the raw score, then each pipeline. Spatial smoothing produces
 the cleanest tissue field. Cell-state smoothing denoises without using position at all. Composing
-does both, and is the smoothest of the three."""
+does both, and is the smoothest of the three — and all three were *derived*, not recomputed, from
+the two layers we smoothed up front. `composed`'s cell-state step reused the same GP solve; only
+its final spatial pass over the GP output was new (the second `knn_gaussian` above)."""
 )
 
 # --------------------------------------------------------------------------------------- #
@@ -311,8 +363,14 @@ monotone map, so it never reorders cells — it only places the numbers where th
 
 code(
     '''\
-# both, blended: independent spatial + cell-state views, symmetric, range-calibrated
-ss.smooth(adata, HIPPOCAMPUS, "blended", steps="blend")
+# both, blended: independent spatial + cell-state views, symmetric, range-calibrated.
+# all_genes=True -> both branches read the layers we already smoothed; the GP does NOT run again.
+gp_before = Counter(json.loads(e["params"])["kind"]
+                    for e in json.loads(adata.uns[ss.CACHE_KEY])["entries"].values())["kompot_gp"]
+ss.smooth(adata, HIPPOCAMPUS, "blended", steps="blend", all_genes=True)
+gp_after = Counter(json.loads(e["params"])["kind"]
+                   for e in json.loads(adata.uns[ss.CACHE_KEY])["entries"].values())["kompot_gp"]
+print(f"GP smooths cached before blend: {gp_before}, after: {gp_after}  (unchanged -> reused)")
 
 # the point of the calibration, in one table: the blended field lands on the raw score's
 # scale (mean/std matched), not in z-units -- so it shares a colour bar with the rest.
@@ -349,7 +407,44 @@ print(f"blend std {r['blend_std']:.3f} vs raw std {r['raw_std']:.3f}  "
 
 md(
     """\
-### 3c. Plot control: kwargs go straight through
+### 3c. Rescuing a sparse gene
+
+This is what smoothing is *for*. A sparse marker — detected in only a small minority of cells — is
+almost invisible in the raw score: a scatter of isolated positive cells with no legible shape. But
+if those cells cluster in a tissue domain, smoothing lets them reinforce each other and the domain
+emerges. We already smoothed every gene above, so pulling out the sparse member costs nothing: it
+is a single-gene signature read straight from the pre-smoothed spatial layer (`all_genes=True` →
+a cache hit, no new smoothing)."""
+)
+
+code(
+    '''\
+print(f"{SPARSE_GENE}: detected in {detection_rate(SPARSE_GENE):.1%} of cells "
+      f"-- raw is mostly zeros")
+
+# A one-gene signature, derived from the all-genes spatial layer we already computed.
+ss.smooth(adata, [SPARSE_GENE], f"{SPARSE_GENE}_smoothed", steps="spatial", all_genes=True)
+
+ss.pl.signature(
+    adata, f"{SPARSE_GENE}_smoothed", raw=True,
+    backend="scanpy", cmap="magma", frameon=False,
+)'''
+)
+
+md(
+    """\
+Left, the raw gene: a sparse speckle you could not annotate. Right, the smoothed field: the same
+handful of positive cells, now summed over their neighbourhoods, resolve the hippocampal domain
+they belong to. Nothing about the measurement changed — the raw score is still there in
+`obs[f"{SPARSE_GENE}_smoothed_raw"]` for any statistics — but the *picture* went from noise to a
+region you can point at. (And, once more: the smoothed panel is for **looking**. A test run on it
+would treat each cell's borrowed signal as independent evidence and badly overstate the domain.)"""
+)
+
+# --------------------------------------------------------------------------------------- #
+md(
+    """\
+### 3d. Plot control: kwargs go straight through
 
 `ss.pl.signature` is a wrapper, not a reimplementation. Everything after `name` is forwarded
 **verbatim** to the backend:
@@ -383,7 +478,7 @@ ss.pl.signature(adata, "hippocampus", backend="squidpy", cmap="magma", figsize=(
 
 md(
     """\
-### 3d. Bandwidth is scale-invariant
+### 3e. Bandwidth is scale-invariant
 
 Every default bandwidth is a multiple of the median nearest-neighbour distance, so the same
 factor smooths the same amount whether coordinates are microns or millimetres. Rescale the
