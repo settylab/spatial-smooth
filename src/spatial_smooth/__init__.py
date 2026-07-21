@@ -50,7 +50,7 @@ step needs ``kompot``, the diffusion map ``palantir``, the KDE step ``KDEpy``, p
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from ._deps import check_dependencies
 from .core import (

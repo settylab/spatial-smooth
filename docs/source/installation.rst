@@ -47,7 +47,7 @@ Check where you stand at any time:
 
 .. code-block:: text
 
-   spatial_smooth v0.1.0 -- dependency check
+   spatial_smooth v0.2.0 -- dependency check
      numpy       2.4.6       ok
      pandas      2.3.3       ok
      scipy       1.18.0      ok
