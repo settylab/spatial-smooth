@@ -6,9 +6,19 @@ Compute
 
 .. autofunction:: spatial_smooth.smooth
 
+.. autofunction:: spatial_smooth.smooth_all
+
 .. autofunction:: spatial_smooth.compute_diffusion_map
 
 .. autofunction:: spatial_smooth.select_cells
+
+
+Caching
+-------
+
+.. autofunction:: spatial_smooth.clear_smooth_cache
+
+.. autodata:: spatial_smooth.CACHE_KEY
 
 
 Steps

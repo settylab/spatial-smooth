@@ -41,16 +41,21 @@ the scientific choice, and this package makes it explicit.
    * - **both, composed**
      - first the manifold, then the tissue
      - denoised expression laid out in space
+   * - **both, blended**
+     - space and cell state, independently
+     - a symmetric mean of the two views, on the raw score's scale
 
-The three are one argument apart:
+Each is one argument apart, and **blend** -- space and cell state on equal footing -- is the mode
+to reach for by default:
 
 .. code-block:: python
 
    import spatial_smooth as ss
 
-   ss.smooth(adata, genes, "sig")                     # spatial only  (the default)
+   ss.smooth(adata, genes, "sig", steps="blend")      # both, symmetric  (recommended)
+   ss.smooth(adata, genes, "sig")                     # spatial only     (the fast default engine)
    ss.smooth(adata, genes, "sig", steps="dm")         # cell state only
-   ss.smooth(adata, genes, "sig", steps="dm+spatial") # both, in that order
+   ss.smooth(adata, genes, "sig", steps="dm+spatial") # both, composed
    ss.pl.signature(adata, "sig")                      # raw vs smoothed, on tissue
 
 Results are written into the :class:`~anndata.AnnData`. Save it, ship it, reload it -- plotting
