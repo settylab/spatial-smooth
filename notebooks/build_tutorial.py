@@ -121,6 +121,12 @@ code(
     '''\
 import pathlib, urllib.request
 
+# 10x's CDN (CloudFront) rejects the default ``Python-urllib`` User-Agent with HTTP 403,
+# so present a browser-like one for the download.
+_opener = urllib.request.build_opener()
+_opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+urllib.request.install_opener(_opener)
+
 BASE = ("https://cf.10xgenomics.com/samples/xenium/1.0.2/"
         "Xenium_V1_FF_Mouse_Brain_Coronal_Subset_CTX_HP")
 NAME = "Xenium_V1_FF_Mouse_Brain_Coronal_Subset_CTX_HP"

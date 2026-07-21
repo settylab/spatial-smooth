@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spatial-smooth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Composable spatial and cell-state smoothing of gene signatures for single-cell and spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.10"

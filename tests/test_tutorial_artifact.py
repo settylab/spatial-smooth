@@ -48,8 +48,29 @@ def _stream_text(notebook, name: str) -> str:
     )
 
 
+def _readable_text(notebook) -> str:
+    """Every human-readable surface a host path could reach the rendered page through.
+
+    Cell source plus the stream, ``text/plain`` / ``text/html`` / ``text/markdown`` and traceback
+    outputs -- but **not** base64 media (``image/png`` and friends). Encoded image bytes are not
+    readable and are not a leak vector, yet a large enough blob contains ``/fh/`` or ``/home/`` by
+    chance -- so scanning the raw file turned an honest figure into a spurious failure. This mirrors
+    exactly what ``notebooks/scrub_notebook.py`` cleans, so the two agree on what "a leak" means.
+    """
+    parts: list[str] = []
+    for cell in notebook["cells"]:
+        parts.append("".join(cell.get("source", [])))
+        for out in cell.get("outputs", []):
+            parts.append("".join(out.get("text", [])))
+            parts.append("\n".join(out.get("traceback", []) or []))
+            data = out.get("data") or {}
+            for mime in ("text/plain", "text/html", "text/markdown"):
+                parts.append("".join(data.get(mime, [])))
+    return "\n".join(parts)
+
+
 def test_tutorial_leaks_no_host_paths(notebook):
-    hits = LEAK.findall(NOTEBOOK.read_text())
+    hits = LEAK.findall(_readable_text(notebook))
     assert not hits, f"tutorial leaks host-specific strings into public docs: {set(hits)}"
 
 

@@ -2,7 +2,7 @@
 
 **Composable smoothing of gene-set signatures over space and cell state.**
 
-📖 **[Documentation](https://settylab.github.io/spatial-smooth/)** · [Tutorial notebook](notebooks/tutorial.ipynb) · [Setty Lab](https://setty-lab.org)
+📖 **[Documentation](https://settylab.github.io/spatial-smooth/)** · [Tutorial notebook](https://github.com/settylab/spatial-smooth/blob/main/notebooks/tutorial.ipynb) · [Setty Lab](https://setty-lab.org)
 
 > ## ⚠️ For visualization only
 >
@@ -31,7 +31,7 @@ ss.smooth(adata, ["Prox1", "Neurod6", "Wfs1", "Fibcd1"], "hippocampus")
 ss.pl.signature(adata, "hippocampus")
 ```
 
-![raw versus smoothed hippocampal signature](docs/source/_static/hippocampus_raw_vs_smoothed.png)
+![raw versus smoothed hippocampal signature](https://raw.githubusercontent.com/settylab/spatial-smooth/main/docs/source/_static/hippocampus_raw_vs_smoothed.png)
 
 *A four-gene hippocampal signature on a public 10x Xenium mouse-brain section (36,419 cells). Left:
 the raw mean z-score. Right: after one line of smoothing — the dentate-gyrus C-shape, the CA
@@ -69,7 +69,7 @@ ss.smooth(adata, genes, "sig", steps="dm")         # cell state only
 ss.smooth(adata, genes, "sig", steps="dm+spatial") # both, in that order
 ```
 
-![the three composition modes](docs/source/_static/composition_modes.png)
+![the three composition modes](https://raw.githubusercontent.com/settylab/spatial-smooth/main/docs/source/_static/composition_modes.png)
 
 *The same signature, four ways. **Spatial** smoothing averages over physically adjacent cells.
 **Cell-state** smoothing averages over transcriptionally similar cells (a diffusion map), without
@@ -188,4 +188,4 @@ scoring semantics, and why gene-level smoothing costs nothing in correctness.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/settylab/spatial-smooth/blob/main/LICENSE).
