@@ -21,6 +21,22 @@ export LOKY_MAX_CPU_COUNT="${LOKY_MAX_CPU_COUNT:-4}"
 export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 
+# Run everything against *this* interpreter's environment, not whatever the shared machine puts
+# first. Two independent hazards on a busy multi-user box, both fixed by pointing at $python_bin's
+# own bin / prefix (discovered dynamically -- no host paths baked in):
+#
+#   1. ``$python_bin -m jupyter nbconvert`` execs ``jupyter-nbconvert`` found on PATH. If some other
+#      environment's console script is ahead on PATH, its shebang launches a different (possibly
+#      broken) Python. Prepend $python_bin's bin so the matching console scripts win.
+#   2. ``--execute`` resolves the "python3" kernelspec off the Jupyter search path, which may point
+#      at an unrelated environment. Register an ipykernel into $python_bin's prefix (idempotent) and
+#      put that prefix first on JUPYTER_PATH so the notebook runs under the same Python.
+python_dir="$(cd "$(dirname "$python_bin")" && pwd)"
+export PATH="${python_dir}:${PATH}"
+env_prefix="$("$python_bin" -c 'import sys; print(sys.prefix)')"
+"$python_bin" -m ipykernel install --sys-prefix --name python3 >/dev/null 2>&1 || true
+export JUPYTER_PATH="${env_prefix}/share/jupyter${JUPYTER_PATH:+:${JUPYTER_PATH}}"
+
 cd "$here"
 
 "$python_bin" build_tutorial.py           # refuses to write a notebook that does not compile

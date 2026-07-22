@@ -86,6 +86,14 @@ range (``calibrate="iqr"``, robust to outlier cells). The map is monotone, so it
 cells; the realised scale and shift are recorded in
 :func:`~spatial_smooth.core.provenance`.
 
+**Which composition to reach for.** ``"spatial"`` is the fast default and the right first thing to
+try -- a truncated Gaussian over tissue coordinates, about a second on a full slide. Use ``"dm"``
+when position is irrelevant and you only want to denoise along the expression manifold. Between the
+two *combinations*, prefer ``"blend"`` when you want space and cell state to contribute on equal
+footing -- cell-state denoising *and* spatial coherence, with neither view dominating; reach for
+``"dm+spatial"`` when you specifically want the composed field that leans on the spatial footprint.
+The :doc:`tutorial <tutorial>` features ``"blend"`` for exactly this reason.
+
 
 The storage contract
 --------------------
@@ -129,6 +137,37 @@ the bandwidth each step actually resolved to:
 ``sigma_nominal`` is the Gaussian's width *before* truncation -- a bandwidth no cell actually
 experiences. (``sigma_used`` is the same number under its older name.) ``sigma_effective`` is what
 the ``k``-truncated kernel behaves like. **Quote the latter** -- see :ref:`truncation` below.
+
+
+Smooth every gene once, then derive any signature for free
+----------------------------------------------------------
+
+The Gaussian process is the one expensive step -- a diffusion-map GP over a whole panel takes
+minutes, where the kNN kernel takes about a second. So do it **once**.
+:func:`~spatial_smooth.smooth_all` smooths *every* gene through a view and stores the result; every
+later :func:`~spatial_smooth.core.smooth` call with ``all_genes=True`` -- for a signature, a single
+gene, or a ``"blend"`` -- reads those pre-smoothed layers instead of recomputing::
+
+    ss.compute_diffusion_map(adata)          # Palantir -> obsm["DM_EigenVectors"]
+    ss.smooth_all(adata, steps="spatial")    # every gene, once, over space
+    ss.smooth_all(adata, steps="dm")         # every gene, once, over the diffusion-map GP
+
+    # all of these are now cache hits -- no smoother runs again:
+    ss.smooth(adata, genes, "spatial_only", steps="spatial",    all_genes=True)
+    ss.smooth(adata, genes, "dm_only",      steps="dm",         all_genes=True)
+    ss.smooth(adata, genes, "composed",     steps="dm+spatial", all_genes=True)
+    ss.smooth(adata, genes, "blended",      steps="blend",      all_genes=True)
+
+The smoothers are per-gene operations, so a signature's smoothed columns gathered from the
+all-genes layer are identical to smoothing that signature alone -- bit-for-bit for the neighbour
+smoothers, to floating-point precision for the GP. A four-mode comparison therefore pays for the
+diffusion-map GP **exactly once**; ``"composed"`` and ``"blended"`` both re-use that single solve.
+
+Underneath, each smoother's output is memoized on the ``AnnData``, keyed by a stable hash of its
+input matrix, parameters and basis (:data:`spatial_smooth.CACHE_KEY`). The cache is bounded
+(``cache_max_entries=N``) and opt-out (``cache=False``);
+:func:`~spatial_smooth.clear_smooth_cache` drops the cache artifacts while leaving the results
+intact.
 
 
 Scoring, and why gene-level smoothing is free
@@ -287,3 +326,54 @@ you back in absolute coordinate units.
 
 A small effective length scale also needs enough landmarks to resolve it: keep ``n_landmarks``
 large enough that the landmark spacing stays below the length scale.
+
+
+Plot control: kwargs pass straight through
+------------------------------------------
+
+:func:`spatial_smooth.plot.signature` is a thin wrapper, not a reimplementation. Everything after
+``name`` is forwarded verbatim to the backend, and ``color`` is set for you from the stored
+provenance; package defaults (``cmap``, percentile colour limits, a grey ``na_color``) are injected
+only for keys you did not pass.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - ``backend``
+     - underlying call
+   * - ``"squidpy"``
+     - ``squidpy.pl.spatial_scatter``
+   * - ``"scanpy"``
+     - ``scanpy.pl.embedding``
+   * - ``"scanpy-spatial"``
+     - ``scanpy.pl.spatial``
+   * - ``"auto"`` (default)
+     - squidpy if installed, else scanpy
+
+.. code-block:: python
+
+   ss.pl.signature(adata, "sig", backend="scanpy", cmap="magma", vmax="p99.5", frameon=False)
+   ss.pl.signature(adata, "sig", backend="squidpy", figsize=(6, 6))
+
+:func:`spatial_smooth.plot.compare` lays several stored results side by side (optionally with the
+raw score as the first panel), which is how the mode figures in this documentation are built.
+
+
+Restricting, conditioning, and other engines
+---------------------------------------------
+
+A few further knobs, each one argument away:
+
+- **Subset of cells.** ``ss.smooth(adata, genes, name, subset_key="annot", include=["CA1"])``
+  smooths only the named cells and returns a **new, smaller** ``AnnData`` -- cells filtered out
+  neither train the smoother nor receive the field, so use the return value.
+- **Fit on one condition, evaluate everywhere.** ``KompotGP(groupby=..., condition=...)`` trains
+  the GP on one group and imputes the field for all cells -- useful when one arm of an experiment is
+  the reference.
+- **Other engines.** :class:`~spatial_smooth.steps.Kde` (a fine-grid FFT Nadaraya-Watson estimator
+  via KDEpy) renders a field rather than a neighbour average; the ``"spatial-gp"`` shorthand puts
+  the Gaussian process on tissue coordinates with a sensible ``ls_factor``::
+
+      ss.smooth(adata, genes, "kde",        steps="spatial-kde")
+      ss.smooth(adata, genes, "spatial_gp", steps="spatial-gp")
